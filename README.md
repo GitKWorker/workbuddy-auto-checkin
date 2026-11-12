@@ -21,6 +21,18 @@ WorkBuddy（Buddy 加油站）每日自动签到 + 积分查询 + 企业微信�
 
 ---
 
+## 0. 实测环境（配套版本）
+
+| 项目 | 实测版本 | 说明 |
+|---|---|---|
+| WorkBuddy 客户端 | **5.9.3** | 接口路径、登录态加密方案均以该版本为准；客户端升级后若报 404/解密失败，优先检查新版 `app.asar` 里是否改了路由 |
+| 操作系统 | Windows 11 | macOS 有路径兼容代码但未验证 |
+| Python | 3.13 | 仅用标准库，无第三方依赖，3.8+ 应均可运行 |
+
+> 接口与客户端版本强相关：签到/积分走 `/v2/billing/meter/*`，派猫旅行走 `/activity/growth/buddy/travel/claim`（从 5.9.3 客户端 `app.asar` 中提取）。官方升级客户端后接口可能变动，届时对照 `resources/app.asar` 里的实际路由同步修改脚本常量（`API_BASE` / `BALANCE_PATH` / `TRAVEL_CLAIM_URL`）。
+
+---
+
 ## 2. 快速使用
 
 ### 2.1 在 WorkBuddy 对话里用（推荐）
