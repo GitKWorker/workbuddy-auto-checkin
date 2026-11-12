@@ -492,6 +492,27 @@ def _physical_macs():
     return real + [m for m in out if int(m[:2], 16) & 0x01]
 
 
+def token_age_desc(token):
+    """解析 JWT 的 iat/exp, 返回如 '签发 2026-10-18, 剩 41 天'。解析失败返回空串。
+
+    用于企微推送里直观区分新旧 token: 多台机器推送时看签发日期即知哪台是今天刚推的。
+    """
+    try:
+        p = str(token).split(".")[1]
+        p += "=" * (-len(p) % 4)
+        claims = json.loads(base64.urlsafe_b64decode(p))
+        iat, exp = claims.get("iat"), claims.get("exp")
+        if not exp:
+            return ""
+        left_days = int(int(exp) - datetime.now().timestamp()) // 86400
+        issued = (f"签发 {datetime.fromtimestamp(int(iat)).strftime('%m-%d')}, "
+                  if iat else "")
+        warn = " ⚠️即将过期" if left_days <= 7 else ""
+        return f"{issued}剩 {max(0, left_days)} 天{warn}"
+    except Exception:
+        return ""
+
+
 def machine_id():
     """机器标识: WB_MACHINE_ID 覆盖 > 物理网卡 MAC(12位大写十六进制) > 主机名。"""
     mid = os.environ.get("WB_MACHINE_ID", "").strip().upper()
@@ -626,7 +647,9 @@ def push_server():
         _ql_req(base, "/open/envs/enable", token=tk, method="PUT", payload=[env_obj.get("id")])
 
     log(f"✓ 已推送到青龙面板: 机器 {entry['machine']} ({device} | {account})")
-    log(f"  面板 {QL_ENV_NAME} 现有 {len(merged)} 台机器的凭证, token 有效期约55天, 建议每日顺带推送")
+    age = token_age_desc(token)
+    log(f"  本次 token: {age or '有效期未知'} (签发日期即新旧标识, 每日顺带推送可保鲜)")
+    log(f"  面板 {QL_ENV_NAME} 现有 {len(merged)} 台机器的凭证")
     return entry
 
 
@@ -678,6 +701,8 @@ def push_wecom(lines, account, device, ip, note=""):
 def process_account(token, uid, account, note, device, ip):
     """单账号完整流程: 状态 -> 幂等签到 -> 积分 -> 本周 -> 旅行。返回推送行列表。"""
     lines = [f"⏰ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"]
+    age = token_age_desc(token)
+    lines.append(f"🔑 token: {age or '有效期未知(非标准JWT)'}")
 
     # 1. 查状态
     ok, data = checkin_status(token, uid)
