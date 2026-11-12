@@ -120,14 +120,14 @@ POST https://www.codebuddy.cn/billing/meter/get-user-resource-summary
 
 前缀差异不是笔误：客户端里签到用 `billingPrefix`（`/v2`），积分用 `resourcePrefix`（空字符串），两条路由挂在不同的网关路径上。
 
-### 3.3 幂等
+### 3.4 幂等
 
 - 签到成功：`code=0`
 - 今日已签到：`code=10001`，且**以 HTTP 400 返回**，业务 JSON 在 body 里 —— 脚本按「成功 + 跳过」处理，不当失败。
 
 所以一天跑多次、多个定时任务重叠，都不会报错或重复领取。
 
-### 3.4 推送内容
+### 3.5 推送内容
 
 ```
 【WorkBuddy 自动签到】
