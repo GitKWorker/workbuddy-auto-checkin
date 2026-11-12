@@ -199,7 +199,9 @@ POST https://www.codebuddy.cn/billing/meter/get-user-resource-summary
 `run quiet` 静默模式（见第 7 节）只有出现 🎁 领奖或报错时才推送，其余情况只在终端打日志，不刷群。
 
 - 内网 IP 用 UDP `connect` 探测默认出口地址获取（**不实际发包**）
-- 公网 IP 走 `api.ipify.org`，3 秒超时，失败自动省略该行，不影响推送
+- **默认只推 IPv4**：内网用 IPv4 路由探测，公网按 `ipv4.icanhazip.com` → `api.ipify.org` → `ifconfig.me` 顺序取（第一个只有 A 记录，强制走 v4）
+- **只有当本机没有 IPv4 时**才退回 IPv6（内网连 `2400:3200::1`、公网试 `api6.ipify.org` / `ipv6.icanhazip.com`），并标注 `[IPv6]`，例如 `[IPv6] 2408:8207:… / 公网[IPv6] 2408:8207:…`
+- 公网查询 3 秒超时，失败自动省略该段，不影响推送；`public_ip: false` 则连公网都不查
 - 积分在签到**之后**查询，数值已含本次奖励
 
 ---
@@ -250,7 +252,7 @@ workbuddy-auto-checkin/
 | `qw_webhook` | `QW_WEBHOOK` / 面板 `WORKBUDDY_CONFIG.qw_webhook` | 空 | 企微群机器人 key，不填则跳过推送 |
 | `account_note` | `WB_ACCOUNT_NOTE` | 空 | 备注，多账号区分用 |
 | `device_name` | `WB_DEVICE_NAME` | 系统主机名 | 推送里的设备名 |
-| `device_ip` | `WB_DEVICE_IP` | 自动探测 | 推送里的 IP |
+| `device_ip` | `WB_DEVICE_IP` | 自动探测 | 推送里的 IP（默认 IPv4，无 v4 才用 IPv6） |
 | `public_ip` | — | `true` | 是否查公网 IP，`false` 可省一次外部请求 |
 | `access_token` | `WORKBUDDY_ACCESS_TOKEN` | 空 | 仅客户端未运行时临时用，正常留空 |
 | `user_id` | `WORKBUDDY_USER_ID` | 空 | 配合上面一条使用 |
@@ -504,6 +506,7 @@ A：不会。`code=10001` 按幂等成功处理。
 
 | 版本 | 变更 |
 |---|---|
+| 1.9 | 设备 IP 优先 IPv4，本机无 IPv4 时才退回 IPv6 并标注 `[IPv6]`；公网接口先试仅 A 记录的 v4 端点 |
 | 1.8 | 派猫旅行支持**主动出发**（`travel/config` 地点表 + `travel/depart`，每日 1 次，地点可指定或随机）；新增 `cat_depart` 命令与 `run quiet` 静默巡检（只在领到奖励/出错时推送） |
 | 1.7 | 新增连登奖励（`streak` / `streak_claim`，7/14/28 天档位自动兑换）；多客户端凭证与任务开关收敛到面板单一变量 `WORKBUDDY_CONFIG` |
 | 1.6 | 推送增加设备 IP 与剩余积分（含额度分项）；修正积分接口真实路径（去 `/v2`）与 403 陷阱 |

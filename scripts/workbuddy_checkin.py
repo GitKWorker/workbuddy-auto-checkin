@@ -36,6 +36,7 @@
 #               签到状态与本周进度 / 剩余积分(含额度分项)
 
 import base64
+import ipaddress
 import json
 import os
 import random
@@ -165,41 +166,106 @@ def get_device_name():
     return name or "未知设备"
 
 
-def get_local_ip():
-    """本机内网 IP: UDP connect 只取路由选中的出口地址, 不实际发包。"""
+def _is_v4(addr):
+    """是否合法 IPv4(用标准库判断, 不靠正则)。"""
     try:
-        import socket
+        ipaddress.IPv4Address(addr)
+        return True
+    except Exception:
+        return False
+
+
+def _is_v6(addr):
+    try:
+        ipaddress.IPv6Address(addr)
+        return True
+    except Exception:
+        return False
+
+
+def get_local_ip():
+    """本机内网 IP: 优先 IPv4, 只有 IPv6 时才返回 IPv6。
+
+    UDP connect 只取路由选中的出口地址, 不实际发包。
+    """
+    import socket
+    # 1) IPv4: 连 IPv4 地址, 内核会挑 IPv4 出口
+    try:
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         try:
             s.connect(("223.5.5.5", 80))
-            return s.getsockname()[0]
+            ip = s.getsockname()[0]
+            if _is_v4(ip) and not ip.startswith("127."):
+                return ip
         finally:
             s.close()
     except Exception:
+        pass
+    # 2) IPv4 兜底: 主机名解析
+    try:
+        ip = socket.gethostbyname(socket.gethostname())
+        if _is_v4(ip) and not ip.startswith("127."):
+            return ip
+    except Exception:
+        pass
+    # 3) 只有 IPv6 的网络: 连 IPv6 地址(阿里 DNS v6)
+    try:
+        s = socket.socket(socket.AF_INET6, socket.SOCK_DGRAM)
         try:
-            import socket
-            ip = socket.gethostbyname(socket.gethostname())
-            return "" if ip.startswith("127.") else ip
-        except Exception:
-            return ""
+            s.connect(("2400:3200::1", 80))
+            ip = s.getsockname()[0]
+            if _is_v6(ip) and not ip.startswith("fe80") and ip != "::1":
+                return ip
+        finally:
+            s.close()
+    except Exception:
+        pass
+    return ""
+
+
+PUBLIC_IP_V4_URLS = (
+    "https://ipv4.icanhazip.com",   # 只有 A 记录, 强制走 IPv4
+    "https://api.ipify.org",
+    "https://ifconfig.me/ip",
+)
+PUBLIC_IP_V6_URLS = (
+    "https://api6.ipify.org",       # 只有 AAAA 记录, 强制走 IPv6
+    "https://ipv6.icanhazip.com",
+)
 
 
 def get_public_ip(timeout=3):
-    """公网出口 IP, 失败返回空串(不影响推送)。"""
-    for url in ("https://api.ipify.org", "https://ifconfig.me/ip"):
+    """公网出口 IP: 优先 IPv4 接口, 全部失败才试 IPv6 专用接口。
+
+    返回纯地址(不带标签); 都取不到返回空串, 不影响推送。
+    """
+    def fetch(url, want_v6):
         try:
             req = urllib.request.Request(url, headers={"User-Agent": "curl/8.5.0"})
             with urllib.request.urlopen(req, timeout=timeout) as resp:
-                ip = resp.read().decode("utf-8", errors="replace").strip()
-            if ip and len(ip) <= 45 and " " not in ip:
-                return ip
+                addr = resp.read().decode("utf-8", errors="replace").strip()
+            if len(addr) > 45 or " " in addr:
+                return ""
+            return addr if (_is_v6(addr) if want_v6 else _is_v4(addr)) else ""
         except Exception:
-            continue
+            return ""
+
+    for url in PUBLIC_IP_V4_URLS:
+        addr = fetch(url, False)
+        if addr:
+            return addr
+    for url in PUBLIC_IP_V6_URLS:
+        addr = fetch(url, True)
+        if addr:
+            return addr
     return ""
 
 
 def get_device_ip():
-    """设备 IP: WB_DEVICE_IP / config.device_ip 覆盖, 否则 '内网 / 公网'。"""
+    """设备 IP: WB_DEVICE_IP / config.device_ip 覆盖, 否则 '内网 / 公网'。
+
+    默认只推 IPv4; 本机没有 IPv4 时才退回 IPv6(会标注 [IPv6])。
+    """
     fixed = (os.environ.get("WB_DEVICE_IP", "").strip()
              or str(_load_config().get("device_ip", "")).strip())
     if fixed:
@@ -207,9 +273,11 @@ def get_device_ip():
     local = get_local_ip()
     show_public = _load_config().get("public_ip", True)
     public = get_public_ip() if show_public else ""
-    if local and public and public != local:
-        return f"{local} / 公网 {public}"
-    return local or public or "未知IP"
+    local_s = f"[IPv6] {local}" if local and _is_v6(local) else local
+    public_s = f"公网[IPv6] {public}" if public and _is_v6(public) else f"公网 {public}" if public else ""
+    if local_s and public_s and public != local:
+        return f"{local_s} / {public_s}"
+    return local_s or public_s or "未知IP"
 
 
 def _find_workbuddy_exe():
