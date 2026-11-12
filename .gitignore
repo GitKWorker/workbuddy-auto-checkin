@@ -1,0 +1,6 @@
+# 本机配置（含企微 webhook 密钥），永不提交
+config.json
+
+__pycache__/
+*.pyc
+.DS_Store

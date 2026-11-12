@@ -1,0 +1,17 @@
+{
+  "_说明": "复制本文件为 config.json 后填写。config.json 不会被提交/同步，仅本机使用。",
+  "qw_webhook": "企业微信群机器人 webhook 地址里 key= 后面那一段",
+  "_account_note": "备注，可选。推送里显示为「🏷️ 备注」（与账号名相同时自动省略）",
+  "account_note": "",
+  "_device_name": "设备名，可选。留空则自动取系统主机名（如 DESKTOP-89VE384）",
+  "device_name": "",
+  "_device_ip": "设备 IP，可选。留空则自动取「内网IP / 公网IP」",
+  "device_ip": "",
+  "_public_ip": "是否查询公网出口 IP（需访问 api.ipify.org，约 1 秒）。false 则只显示内网 IP",
+  "public_ip": true,
+  "_access_token": "通常留空，脚本会自动从 WorkBuddy 客户端解密；仅在客户端未运行时临时使用",
+  "access_token": "",
+  "user_id": "",
+  "_account_name": "仅在手动填 access_token 时用于显示账号名；自动解密时会取客户端昵称",
+  "account_name": ""
+}
