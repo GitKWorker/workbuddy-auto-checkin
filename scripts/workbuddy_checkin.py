@@ -577,7 +577,11 @@ def get_streak(token, uid):
 
 
 def claim_streak_rewards(token, uid):
-    """领取所有可领(available)的连登档位。返回 (领取列表, 状态描述)。"""
+    """领取可领(available)的连登档位。返回 (领取列表, 状态描述)。
+
+    档位可裁剪: tasks.streak_reward={"enabled":true,"tiers":["14d","28d"]}
+    只领列出的档位(未配置则三档全领), 让用户能把 7 天档留着自己手动点。
+    """
     d = get_streak(token, uid)
     if not d:
         return [], "连登信息查询失败"
@@ -588,10 +592,15 @@ def claim_streak_rewards(token, uid):
     next_tier = streak.get("next_tier")
     remain = streak.get("next_tier_remaining")
 
+    only = task_option("streak_reward", "tiers")
+    only = {str(x) for x in only} if isinstance(only, (list, tuple)) else None
+
     got = []
     for t in tiers:
         name = str(t.get("tier") or "")
         if not name:
+            continue
+        if only is not None and name not in only:
             continue
         if red.get(f"tier_{name}_status") != "available":
             continue

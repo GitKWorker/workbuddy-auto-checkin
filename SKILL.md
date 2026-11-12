@@ -3,7 +3,7 @@ name: workbuddy-auto-checkin
 display_name: WorkBuddy签到+积分查询+企微推送
 description: Buddy加油站每日签到（自动从本机 WorkBuddy 客户端解密登录态），幂等跳过已完成任务，一键执行后推送企微明细（含账号名、设备名、设备 IP 与剩余积分）
 author: 龙猫科技说复刻增强版（带积分）
-version: 1.7
+version: 1.8
 agent_created: true
 permissions:
   - http.fetch
@@ -86,11 +86,29 @@ cd "%USERPROFILE%\.workbuddy\skills\workbuddy-auto-checkin\scripts" && python wo
 
 任务开关：`config.json` 的 `tasks`（或面板 `WORKBUDDY_CONFIG.tasks`）控制哪些活动自动执行，如 `{"checkin": true, "cat_travel": false}`。**全局一份，对所有账号/机器生效**；未写的任务按启用处理。用户说「不要跑某个活动」时改这里，不要改代码。
 
-任务还可以写成对象附带参数，目前只有 `cat_travel` 支持 `location`（目的地 id / code / 中文名，缺省或 `random` 则随机）：
+任务还可以写成对象附带参数（`enabled` + 该任务的参数）：
+
+| 任务 | 参数 | 说明 |
+|---|---|---|
+| `cat_travel` | `location` | 目的地 id / code / 中文名，缺省或 `random` 则随机 |
+| `streak_reward` | `tiers` | 只自动领这些连登档位，如 `["14d","28d"]`；不写则三档全领 |
 
 ```json
-{ "tasks": { "cat_travel": { "enabled": true, "location": "coffee" } } }
+{
+  "tasks": {
+    "cat_travel":    { "enabled": true, "location": "coffee" },
+    "streak_reward": { "enabled": true, "tiers": ["14d", "28d"] }
+  }
+}
 ```
+
+## 定时提示（重要）
+
+脚本**不判断时间、不做调度**，什么时候跑完全由外部定时决定（WorkBuddy 定时任务 / Windows 任务计划 / 青龙 cron）。用户只配了每天一次时，**主动提示**这几点，但**不要自行新建定时任务**，除非用户明确要求：
+
+1. 派猫行程 1~4 小时，9:05 出发后要 10~13 点才到达，那一次跑只会看到「旅行中，预计 X 后到达」，领不到奖
+2. 想当天领奖，白天再手动跑一次 `run`（或加一条 `run quiet` 定时，只在领到奖励时推送）
+3. `run quiet` 适合高频巡检：没有收获时只打日志、不推企微，不会刷群
 
 完整实现说明、配置项、常见问题见同目录 `README.md`。
 

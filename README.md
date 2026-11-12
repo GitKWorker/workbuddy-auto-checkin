@@ -147,7 +147,7 @@ POST https://www.codebuddy.cn/billing/meter/get-user-resource-summary
 { "tasks": { "cat_travel": { "enabled": true, "location": "coffee" } } }
 ```
 
-行程 1~4 小时随机，服务端自动推进，所以**一次 9:05 跑完是拿不到奖励的**：出发后要再过几个小时才到达。定时任务因此拆成「早上出发 + 白天静默巡检领奖」，见第 7 节。
+行程 1~4 小时随机、服务端自动推进，所以**只跑一次 9:05 时猫还在路上**，要过几个小时才到达。建议的调度方式见第 7 节（脚本不自己判断时间，跑不跑由外部定时决定）。
 
 ### 3.5 连登奖励（成长中心 growth-center）
 
@@ -294,7 +294,19 @@ webhook key 获取：企业微信群 → 右上角「…」→ 群机器人 → 
 规则与细节：
 
 - **只写要改的**：未出现的任务走默认值（启用），不必列全
-- **也接受带参数的写法**：`{"cat_travel": {"enabled": true, "location": "coffee"}}`；`location` 支持 `id`/`code`/中文名，缺省或 `random` 则每次随机挑目的地
+- **也接受带参数的写法**（`enabled` 之外还能带该任务的参数）：
+
+  | 任务 | 参数 | 说明 |
+  |---|---|---|
+  | `cat_travel` | `location` | 目的地，支持 `id`/`code`/中文名；缺省或 `random` 每次随机 |
+  | `streak_reward` | `tiers` | 只自动领这些档位，如 `["14d","28d"]`；不写则 7/14/28 三档都领 |
+
+  ```jsonc
+  "tasks": {
+    "cat_travel":    {"enabled": true, "location": "coffee"},
+    "streak_reward": {"enabled": true, "tiers": ["14d", "28d"]}
+  }
+  ```
 - **禁用后推送里不出现该行**，只在日志里留一句「⏭ 跳过 …」，保持消息干净
 - **单任务异常不影响其他任务**：某个活动接口挂了只在推送里标 `⚠️ 异常`，签到照常
 - 查看当前生效状态：`python workbuddy_checkin.py tasks`
@@ -318,12 +330,16 @@ $ python workbuddy_checkin.py tasks
 
 ## 7. 定时执行（可选）
 
-**建议一天跑多档**：派猫出发后 1~4 小时才到达，只跑一次 9:05 永远领不到奖励。推荐「早上一次完整推送 + 白天每 2 小时静默巡检」：
+> **脚本本身不判断时间、不做调度**：什么时候跑一次，完全由你外部的任务计划 / 青龙 cron / WorkBuddy 定时任务决定。下面是**建议方案**，不是代码里的行为。
+
+**为什么建议一天跑多档**：派猫出发后 1~4 小时才到达（服务端随机），只跑一次 9:05 时猫还在路上，`claim` 返回 `not arrived yet`，当天奖励就白等了。所以推荐「早上一次完整推送 + 白天每 2 小时静默巡检」：
 
 ```bash
 python workbuddy_checkin.py run          # 9:05 完整跑 + 推送（签到/连登/出发）
 python workbuddy_checkin.py run quiet    # 11:05 / 13:05 … 静默跑，只在领到奖励或出错时推送
 ```
+
+如果你只用 WorkBuddy 的定时任务（本机这一台就是），那就只配 9:05 一条，白天想领奖时手动说一句「帮我跑一次签到」——效果一样，只是不自动化。
 
 Windows 任务计划里就是两条触发器：
 
