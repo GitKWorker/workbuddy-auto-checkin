@@ -31,7 +31,11 @@ trigger_words:
 - 实测：`TotalCredits=785.48`、`体验版`、套餐基础积分 385.48/500、平台奖励积分（签到）400/400
 - 该路由**缺 User-Agent 会 403**，必须带 UA 头
 
-⚠️ 已下线（404 Route Not Found，不要重试）：`cat-travel-status/start/reward`（派猫旅行）、`/v2/billing/meter/info`、`/v2/.../get-user-resource-summary`（带 `/v2` 的旧写法）。
+派猫旅行（2026-11 更新，旧 `cat-travel-*` 已 404，不要再用）：
+- `GET /v2/activity/growth/buddy/info`：猫猫档案（name/rarity/personality）+ `poll_interval_seconds`
+- `POST /activity/growth/buddy/travel/claim`：领取到达奖励；未到达返回 403 `"not arrived yet"`
+- 旅行由服务端自动推进，**没有 start 接口**；到达后客户端收到 `growth.travel_arrival` 通知再领奖
+仍下线（404，不要重试）：`/v2/billing/meter/info`、`/v2/.../get-user-resource-summary`（带 `/v2` 的旧写法）。
 
 ## 鉴权（已实测打通）
 
@@ -64,7 +68,8 @@ cd "%USERPROFILE%\.workbuddy\skills\workbuddy-auto-checkin\scripts" && python wo
 | 检查签到状态 | `python workbuddy_checkin.py status` | 仅查询签到状态/连签/本周进度 |
 | 签到 | `python workbuddy_checkin.py checkin` | 未签则签，已签幂等跳过 |
 | 查询积分 | `python workbuddy_checkin.py point` | 剩余积分总额 + 额度分项 + 今日/连签 |
-| 派猫旅行 / 领取旅行奖励 | `python workbuddy_checkin.py cat_*` | 明确提示接口已下线，不重试 |
+| 查询猫猫档案 | `python workbuddy_checkin.py cat_status` | 猫猫昵称/稀有度/性格 + 轮询间隔 |
+| 领取旅行奖励 | `python workbuddy_checkin.py cat_claim` | 到达则领奖，未到达明确提示不算失败 |
 
 完整实现说明、配置项、常见问题见同目录 `README.md`。
 

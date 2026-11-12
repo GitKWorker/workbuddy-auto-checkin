@@ -1,12 +1,13 @@
 # -*- coding: utf-8 -*-
 # workbuddy-auto-checkin: WorkBuddy(Buddy加油站)每日签到 + 企微推送
 #
-# 命令: run(默认) / status / checkin / point / cat_status / cat_start / cat_reward
-#   run        一键: 查状态 -> 未签则签到 -> 汇总 -> 推送企微
+# 命令: run(默认) / status / checkin / point / cat_status / cat_claim
+#   run        一键: 查状态 -> 未签则签到 -> 查积分 -> 尝试领取旅行奖励 -> 汇总 -> 推送企微
 #   status     仅查询签到状态(连签天数/本周进度)
 #   checkin    未签到则签到, 已签到幂等跳过
 #   point      查询积分余额(接口已下线时会明确提示)
-#   cat_*      派猫旅行相关(当前网关已下线, 会明确提示)
+#   cat_status 查询猫猫(昵称/稀有度)与旅行轮询间隔
+#   cat_claim  尝试领取派猫旅行奖励(未到达时明确提示, 不算失败)
 #
 # 凭证自动解析(按优先级, 全程不落盘):
 #   1. 环境变量 WORKBUDDY_ACCESS_TOKEN / CODEBUDDY_ACCESS_TOKEN (明文 JWT)
@@ -42,6 +43,12 @@ TIMEOUT = 30
 
 # 积分汇总接口: 与签到不同, 它在 /v2 之外 (客户端 resourcePrefix 为空)
 BALANCE_PATH = "/billing/meter/get-user-resource-summary"
+
+# 派猫旅行(2026-11 客户端新版接口, 旧 /v2/billing/meter/cat-travel-* 已下线):
+#   GET  /v2/activity/growth/buddy/info         猫猫档案(服务端自动旅行, 客户端每 poll_interval 秒轮询)
+#   POST /activity/growth/buddy/travel/claim    领取到达奖励(未到达返回 403 "not arrived yet")
+BUDDY_INFO_URL = "https://www.codebuddy.cn/v2/activity/growth/buddy/info"
+TRAVEL_CLAIM_URL = "https://www.codebuddy.cn/activity/growth/buddy/travel/claim"
 
 # 幂等错误码: 不算失败
 CODE_OK = 0
@@ -259,6 +266,27 @@ def _post(url, token, uid, payload=None):
         return -1, {"code": -1, "msg": str(e)}
 
 
+def _get(url, token, uid):
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "X-User-Id": uid or "",
+        "Accept": "application/json",
+        "User-Agent": "WorkBuddy-Checkin-Bot/1.0",
+    }
+    req = urllib.request.Request(url, headers=headers, method="GET")
+    try:
+        with urllib.request.urlopen(req, timeout=TIMEOUT) as resp:
+            return resp.status, json.loads(resp.read().decode("utf-8", errors="replace"))
+    except urllib.error.HTTPError as e:
+        body = e.read().decode("utf-8", errors="replace")
+        try:
+            return e.code, json.loads(body)
+        except json.JSONDecodeError:
+            return e.code, {"code": e.code, "msg": f"HTTP {e.code}: {body[:200]}"}
+    except Exception as e:
+        return -1, {"code": -1, "msg": str(e)}
+
+
 def checkin_status(token, uid):
     st, body = api("checkin-activity-status", token, uid)
     if st == 200 and body.get("code") == 0:
@@ -332,6 +360,43 @@ def balance_detail(info):
         return ""
     return " · ".join(f"{name} {fmt_credit(rem)}/{fmt_credit(tot)}"
                       for name, rem, tot in info["groups"])
+
+
+def get_buddy_info(token, uid):
+    """猫猫档案。返回 dict 或 None。buddy 含 name/rarity/personality 等字段。"""
+    st, body = _get(BUDDY_INFO_URL, token, uid)
+    data = body.get("data")
+    if body.get("code") != 0 or not isinstance(data, dict):
+        return None
+    buddy = data.get("buddy") or {}
+    if not isinstance(buddy, dict):
+        return None
+    return {
+        "name": (buddy.get("name") or "").strip(),
+        "rarity": (buddy.get("rarity") or "").strip(),
+        "personality": (buddy.get("personality") or "").strip(),
+        "poll_seconds": data.get("poll_interval_seconds"),
+    }
+
+
+def claim_travel(token, uid):
+    """尝试领取旅行奖励。返回 (claimed, msg)。
+
+    claimed=True  -> 领取成功(奖励已入账)
+    claimed=False -> 旅行未到达/已领取/接口异常, msg 给出原因, 不算脚本失败
+    """
+    st, body = _post(TRAVEL_CLAIM_URL, token, uid)
+    code = body.get("code")
+    if st == 200 and code == 0:
+        data = body.get("data") or {}
+        credit = _num(data.get("credit")) or _num(data.get("reward"))
+        return True, (f"领取成功, 奖励 {fmt_credit(credit)} 积分" if credit else "领取成功")
+    msg = str(body.get("msg") or body.get("error_msg") or "").strip()
+    if "not arrived" in msg.lower():
+        return False, "旅行中, 尚未到达"
+    if "claim" in msg.lower() and ("claimed" in msg.lower() or "already" in msg.lower()):
+        return False, "奖励已领取过"
+    return False, f"未领取: HTTP {st} code={code} {msg[:60]}"
 
 
 def _load_config():
@@ -439,6 +504,13 @@ def run_all():
                      f"(每日 {data.get('daily_credit', '?')} 积分)")
         log(lines[-1])
 
+    # 5. 派猫旅行奖励(到达才领, 未到达不影响推送)
+    buddy = get_buddy_info(token, uid)
+    cat_name = buddy["name"] if buddy else "猫猫"
+    claimed, travel_msg = claim_travel(token, uid)
+    lines.append(f"{'🎁' if claimed else '🐱'} 派猫旅行: {cat_name} {travel_msg}")
+    log(lines[-1])
+
     push_wecom(lines, account, device, ip, note)
 
 
@@ -483,12 +555,27 @@ def main():
             print(f"今日积分: {data.get('today_credit', '?')} | 每日: {data.get('daily_credit', '?')} "
                   f"| 连签: {data.get('streak_days', '?')} 天")
         sys.exit(0 if info else 1)
-    elif arg in ("cat_status", "cat_start", "cat_reward"):
-        print("派猫旅行接口(/v2/billing/meter/cat-travel-*)当前网关已下线(404), 暂不可用。")
-        print("如客户端更新后恢复, 请检查 SKILL.md 中的接口清单。")
+    elif arg in ("cat_status", "cat_claim", "cat_start", "cat_reward"):
+        # cat_start/cat_reward 为旧命令名, 保留兼容: start 无接口(旅行自动进行),
+        # reward 等同 claim
+        print(f"账号: {account} | 设备: {device} ({ip})")
+        if arg == "cat_status" or arg == "cat_start":
+            buddy = get_buddy_info(token, uid)
+            if buddy:
+                extra = f" | {buddy['personality']}" if buddy["personality"] else ""
+                print(f"猫猫: {buddy['name'] or '?'} ({buddy['rarity'] or '?'}{extra})")
+                if buddy["poll_seconds"]:
+                    print(f"旅行轮询间隔: {buddy['poll_seconds']} 秒(旅行由服务端自动推进)")
+            else:
+                print("猫猫档案查询失败(接口可能变更, 请检查客户端新版本)")
+                sys.exit(1)
+        else:
+            claimed, msg = claim_travel(token, uid)
+            print(f"派猫旅行: {msg}")
+            sys.exit(0 if claimed or "尚未到达" in msg or "已领取" in msg else 1)
     else:
         print(f"未知命令: {arg}")
-        print("用法: python workbuddy_checkin.py [run|status|checkin|point|cat_status|cat_start|cat_reward]")
+        print("用法: python workbuddy_checkin.py [run|status|checkin|point|cat_status|cat_claim]")
         sys.exit(2)
 
 
