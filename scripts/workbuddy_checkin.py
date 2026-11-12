@@ -509,7 +509,13 @@ def machine_id():
 
 
 def _ql_req(base, path, token=None, method="GET", payload=None):
-    headers = {"Content-Type": "application/json", "Accept": "application/json"}
+    # 面板若套 Cloudflare, 非浏览器 UA 会被 1010 拦截
+    headers = {
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                      "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+    }
     if token:
         headers["Authorization"] = f"Bearer {token}"
     req = urllib.request.Request(
@@ -527,6 +533,16 @@ def _ql_req(base, path, token=None, method="GET", payload=None):
             return e.code, {"code": e.code, "msg": f"HTTP {e.code}: {body[:200]}"}
     except Exception as e:
         return -1, {"code": -1, "msg": str(e)}
+
+
+def _ql_login(base, cid, csec):
+    """青龙 OpenAPI 鉴权: GET /open/auth/token, 凭证走 URL 参数(2.13+ 版本)。"""
+    import urllib.parse
+    qs = urllib.parse.urlencode({"client_id": cid, "client_secret": csec})
+    st, body = _ql_req(base, f"/open/auth/token?{qs}")
+    if body.get("code") != 200 or not (body.get("data") or {}).get("token"):
+        raise RuntimeError(f"青龙登录失败: {json.dumps(body, ensure_ascii=False)[:160]}")
+    return body["data"]["token"]
 
 
 def _b64d(v):
@@ -570,11 +586,11 @@ def push_server():
         "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
     }
 
-    st, body = _ql_req(base, "/open/auth/token", payload={"client_id": cid, "client_secret": csec}, method="POST")
-    if body.get("code") != 200 or not (body.get("data") or {}).get("token"):
-        log(f"✗ 青龙登录失败: {json.dumps(body, ensure_ascii=False)[:160]}")
+    try:
+        tk = _ql_login(base, cid, csec)
+    except RuntimeError as e:
+        log(f"✗ {e}")
         sys.exit(1)
-    tk = body["data"]["token"]
 
     st, body = _ql_req(base, f"/open/envs?searchValue={QL_ENV_NAME}", token=tk)
     if body.get("code") != 200:
@@ -595,15 +611,19 @@ def push_server():
     val = json.dumps(merged, ensure_ascii=False)
     remark = f"WorkBuddy签到多账号(自动维护, 共{len(merged)}台)"
     if env_obj:
+        # 实测 2.18.3: 创建用数组, 更新用单对象(值均为明文字符串)
         st, body = _ql_req(base, "/open/envs", token=tk, method="PUT",
-                           payload=[{"id": env_obj.get("id"), "name": QL_ENV_NAME,
-                                     "value": val, "remarks": remark}])
+                           payload={"id": env_obj.get("id"), "name": QL_ENV_NAME,
+                                    "value": val, "remarks": remark})
     else:
         st, body = _ql_req(base, "/open/envs", token=tk, method="POST",
                            payload=[{"name": QL_ENV_NAME, "value": val, "remarks": remark}])
     if body.get("code") != 200:
         log(f"✗ 写入环境变量失败: {json.dumps(body, ensure_ascii=False)[:160]}")
         sys.exit(1)
+
+    if env_obj:
+        _ql_req(base, "/open/envs/enable", token=tk, method="PUT", payload=[env_obj.get("id")])
 
     log(f"✓ 已推送到青龙面板: 机器 {entry['machine']} ({device} | {account})")
     log(f"  面板 {QL_ENV_NAME} 现有 {len(merged)} 台机器的凭证, token 有效期约55天, 建议每日顺带推送")
