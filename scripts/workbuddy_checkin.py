@@ -493,9 +493,9 @@ def _physical_macs():
 
 
 def token_age_desc(token):
-    """解析 JWT 的 iat/exp, 返回如 '签发 2026-10-18, 剩 41 天'。解析失败返回空串。
+    """解析 JWT 的 iat/exp, 返回如 '签发 2026-11-12 16:03:45, 剩 41 天'。解析失败返回空串。
 
-    用于企微推送里直观区分新旧 token: 多台机器推送时看签发日期即知哪台是今天刚推的。
+    用于企微推送里直观区分新旧 token: 多台机器推送时看签发时刻即知哪台是刚推的。
     """
     try:
         p = str(token).split(".")[1]
@@ -505,7 +505,7 @@ def token_age_desc(token):
         if not exp:
             return ""
         left_days = int(int(exp) - datetime.now().timestamp()) // 86400
-        issued = (f"签发 {datetime.fromtimestamp(int(iat)).strftime('%m-%d')}, "
+        issued = (f"签发 {datetime.fromtimestamp(int(iat)).strftime('%Y-%m-%d %H:%M:%S')}, "
                   if iat else "")
         warn = " ⚠️即将过期" if left_days <= 7 else ""
         return f"{issued}剩 {max(0, left_days)} 天{warn}"

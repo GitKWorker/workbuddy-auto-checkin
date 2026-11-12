@@ -136,7 +136,7 @@ POST https://www.codebuddy.cn/billing/meter/get-user-resource-summary
 💻 设备: DESKTOP-89VE384
 🌐 IP: 10.1.9.15 / 公网 118.114.237.61
 ⏰ 2026-11-12 13:16:42
-🔑 token: 签发 11-12, 剩 27 天            ← JWT iat/exp 解析, 签发日期即新旧标识; ≤7天标 ⚠️即将过期
+🔑 token: 签发 2026-11-12 16:06:18, 剩 27 天  ← JWT iat/exp 解析, 签发时刻即新旧标识; ≤7天标 ⚠️即将过期
 📋 状态: 今日已签到, 连签 4 天
 ✅ 签到: 今日已签到(跳过)
 💰 剩余积分: 784.06 (体验版)
