@@ -29,7 +29,8 @@
 #   WB_ACCOUNT_NOTE    账号备注(推送里额外的 🏷️ 备注行, 可留空)
 #   WB_ACCOUNT_NAME    手动指定账号名(仅在用 access_token 环境变量时生效; 自动解密会取昵称)
 #   WB_DEVICE_NAME     设备名(默认自动取系统主机名)
-#   WB_DEVICE_IP       设备 IP(默认自动取内网 IP + 公网出口 IP)
+#   WB_DEVICE_IP       设备 IP(默认自动取内网 IP + 公网出口 IP, 优先 IPv4)
+#   WB_CLIENT_VERSION  客户端版本号(默认读 install-manifest.json, 失败退回 exe 文件版本)
 #   WORKBUDDY_USER_ID  手动指定 uid(一般自动从 auth 文件读取)
 #
 # 推送内容包含: 账号名(客户端昵称 + 掩码手机号) / 设备名 / 设备 IP /
@@ -278,6 +279,73 @@ def get_device_ip():
     if local_s and public_s and public != local:
         return f"{local_s} / {public_s}"
     return local_s or public_s or "未知IP"
+
+
+def _exe_file_version(path):
+    """Windows PE 文件版本(ctypes 读 VS_FIXEDFILEINFO), 取不到返回空串。"""
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        class VS_FIXEDFILEINFO(ctypes.Structure):
+            _fields_ = [
+                ("dwSignature", wintypes.DWORD), ("dwStrucVersion", wintypes.DWORD),
+                ("dwFileVersionMS", wintypes.DWORD), ("dwFileVersionLS", wintypes.DWORD),
+                ("dwProductVersionMS", wintypes.DWORD), ("dwProductVersionLS", wintypes.DWORD),
+                ("dwFileFlagsMask", wintypes.DWORD), ("dwFileFlags", wintypes.DWORD),
+                ("dwFileOS", wintypes.DWORD), ("dwFileType", wintypes.DWORD),
+                ("dwFileSubtype", wintypes.DWORD), ("dwFileDateMS", wintypes.DWORD),
+                ("dwFileDateLS", wintypes.DWORD),
+            ]
+
+        ver = ctypes.WinDLL("version")
+        size = ver.GetFileVersionInfoSizeW(str(path), None)
+        if not size:
+            return ""
+        buf = ctypes.create_string_buffer(size)
+        if not ver.GetFileVersionInfoW(str(path), 0, size, buf):
+            return ""
+        ptr = ctypes.c_void_p()
+        length = wintypes.UINT()
+        if not ver.VerQueryValueW(buf, "\\", ctypes.byref(ptr), ctypes.byref(length)):
+            return ""
+        info = ctypes.cast(ptr, ctypes.POINTER(VS_FIXEDFILEINFO)).contents
+        ms, ls = info.dwFileVersionMS, info.dwFileVersionLS
+        out = f"{ms >> 16}.{ms & 0xFFFF}.{ls >> 16}.{ls & 0xFFFF}"
+        return out[:-2] if out.endswith(".0") else out
+    except Exception:
+        return ""
+
+
+_CLIENT_VERSION = None
+
+
+def get_client_version():
+    """WorkBuddy 客户端版本号: WB_CLIENT_VERSION 覆盖 > install-manifest.json > exe 文件版本。
+
+    读不到(如服务器/青龙面板没有客户端)返回空串, 推送里就不显示这一行。
+    """
+    global _CLIENT_VERSION
+    if _CLIENT_VERSION is not None:
+        return _CLIENT_VERSION
+    ver = os.environ.get("WB_CLIENT_VERSION", "").strip()
+    exe = _find_workbuddy_exe()
+    if not ver and exe:
+        base = Path(exe).resolve().parent
+        for manifest in (base / "resources" / "install-manifest.json",
+                         base / "Contents" / "Resources" / "install-manifest.json"):
+            if not manifest.exists():
+                continue
+            try:
+                ver = str(json.loads(manifest.read_text(encoding="utf-8")).get("appVersion") or "").strip()
+            except Exception:
+                ver = ""
+            if ver:
+                break
+        if not ver:
+            ver = _exe_file_version(exe)
+    _CLIENT_VERSION = ver
+    return ver
 
 
 def _find_workbuddy_exe():
@@ -1099,6 +1167,9 @@ def push_wecom(lines, account, device, ip, note=""):
     if note and note != account:
         head.append(f"🏷️ 备注: {note}")
     head.append(f"💻 设备: {device}")
+    ver = get_client_version()
+    if ver:
+        head.append(f"🧩 客户端: WorkBuddy {ver}")
     if ip:
         head.append(f"🌐 IP: {ip}")
     text = "\n".join(head + lines)

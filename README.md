@@ -175,6 +175,7 @@ POST https://www.codebuddy.cn/billing/meter/get-user-resource-summary
 👤 账号: 兰心 (134****2267)
 🏷️ 备注: 家里电脑                       ← 可选，config.account_note，与账号名相同则省略
 💻 设备: DESKTOP-89VE384
+🧩 客户端: WorkBuddy 5.9.3                ← 本机客户端版本；服务器/面板上读不到时省略
 🌐 IP: 10.1.9.15 / 公网 118.114.237.61
 ⏰ 2026-11-12 13:16:42
 🔑 token: 签发 2026-11-12 16:06:18, 剩 27 天  ← JWT iat/exp 解析, 签发时刻即新旧标识; ≤7天标 ⚠️即将过期
@@ -253,6 +254,7 @@ workbuddy-auto-checkin/
 | `account_note` | `WB_ACCOUNT_NOTE` | 空 | 备注，多账号区分用 |
 | `device_name` | `WB_DEVICE_NAME` | 系统主机名 | 推送里的设备名 |
 | `device_ip` | `WB_DEVICE_IP` | 自动探测 | 推送里的 IP（默认 IPv4，无 v4 才用 IPv6） |
+| — | `WB_CLIENT_VERSION` | 自动读取 | 推送里的客户端版本；手动覆盖用，一般不用设 |
 | `public_ip` | — | `true` | 是否查公网 IP，`false` 可省一次外部请求 |
 | `access_token` | `WORKBUDDY_ACCESS_TOKEN` | 空 | 仅客户端未运行时临时用，正常留空 |
 | `user_id` | `WORKBUDDY_USER_ID` | 空 | 配合上面一条使用 |
@@ -506,6 +508,7 @@ A：不会。`code=10001` 按幂等成功处理。
 
 | 版本 | 变更 |
 |---|---|
+| 1.10 | 推送增加 `🧩 客户端: WorkBuddy <版本>`（读 `resources/install-manifest.json`，退回 exe 文件版本） |
 | 1.9 | 设备 IP 优先 IPv4，本机无 IPv4 时才退回 IPv6 并标注 `[IPv6]`；公网接口先试仅 A 记录的 v4 端点 |
 | 1.8 | 派猫旅行支持**主动出发**（`travel/config` 地点表 + `travel/depart`，每日 1 次，地点可指定或随机）；新增 `cat_depart` 命令与 `run quiet` 静默巡检（只在领到奖励/出错时推送） |
 | 1.7 | 新增连登奖励（`streak` / `streak_claim`，7/14/28 天档位自动兑换）；多客户端凭证与任务开关收敛到面板单一变量 `WORKBUDDY_CONFIG` |

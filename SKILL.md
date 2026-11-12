@@ -3,7 +3,7 @@ name: workbuddy-auto-checkin
 display_name: WorkBuddy签到+积分查询+企微推送
 description: Buddy加油站每日签到（自动从本机 WorkBuddy 客户端解密登录态），幂等跳过已完成任务，一键执行后推送企微明细（含账号名、设备名、设备 IP 与剩余积分）
 author: 龙猫科技说复刻增强版（带积分）
-version: 1.9
+version: 1.10
 agent_created: true
 permissions:
   - http.fetch
@@ -128,6 +128,7 @@ cd "%USERPROFILE%\.workbuddy\skills\workbuddy-auto-checkin\scripts" && python wo
   👤 账号: 兰心 (134****2267)      ← 自动解密客户端昵称 + 掩码手机号
   🏷️ 备注: 家里电脑              ← 可选，config.account_note，与账号名相同则省略
   💻 设备: DESKTOP-89VE384        ← 系统主机名，可用 config.device_name 覆盖
+  🧩 客户端: WorkBuddy 5.9.3      ← 本机客户端版本（install-manifest.json，退回 exe 版本）；读不到则省略
   🌐 IP: 10.1.9.15 / 公网 118.114.237.61   ← 默认 IPv4；本机无 v4 时才显示 [IPv6] 地址；公网可关（config.public_ip=false）
   ⏰ 2026-11-12 13:16:01
   📋 状态: 今日已签到, 连签 4 天
