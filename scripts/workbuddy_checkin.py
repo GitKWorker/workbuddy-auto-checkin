@@ -1,15 +1,20 @@
 # -*- coding: utf-8 -*-
 # workbuddy-auto-checkin: WorkBuddy(Buddy加油站)每日签到 + 企微推送
 #
-# 命令: run(默认) / status / checkin / point / cat_status / cat_claim / push_server
-#   run         一键: 查状态 -> 未签则签到 -> 查积分 -> 尝试领取旅行奖励 -> 汇总 -> 推送企微
-#               若存在 WB_ACCOUNTS 环境变量(JSON数组)则多账号模式: 逐台执行并分别推送
+# 命令: run / status / checkin / point / cat_status / cat_depart / cat_claim
+#       / streak / streak_claim / push_server / tasks
+#   run         一键: 查状态 -> 未签则签到 -> 查积分 -> 领连登档位 -> 派猫(领奖/自动出发) -> 推送企微
+#               若存在 WORKBUDDY_CONFIG 环境变量(JSON)则多账号模式: 逐台执行并分别推送
+#   run quiet   静默模式: 只有真领到奖励或出错时才推送(适合一天多档补充巡检)
 #   status      仅查询签到状态(连签天数/本周进度)
 #   checkin     未签到则签到, 已签到幂等跳过
 #   point       查询积分余额(接口已下线时会明确提示)
-#   cat_status  查询猫猫(昵称/稀有度)与旅行行程(目的地/ETA/奖励)
+#   cat_status  查询猫猫(昵称/稀有度)与旅行行程(目的地/ETA/奖励), 空闲时列出可选目的地
+#   cat_depart  派猫出发: 空闲且有当日名额就出发(地点按 tasks.cat_travel.location, 默认随机)
 #   cat_claim   尝试领取派猫旅行奖励(未到达时明确提示, 不算失败)
-#   push_server 把本机最新登录态推送到青龙面板(单一 WB_ACCOUNTS JSON 环境变量, 按 MAC 幂等合并)
+#   streak      查看连登天数与各档位状态
+#   streak_claim 领取已达标(available)的连登档位
+#   push_server 把本机最新登录态推送到青龙面板(单一 WORKBUDDY_CONFIG JSON 环境变量, 按 MAC 幂等合并)
 #
 # 凭证自动解析(按优先级, 全程不落盘):
 #   1. 环境变量 WORKBUDDY_ACCESS_TOKEN / CODEBUDDY_ACCESS_TOKEN (明文 JWT)
@@ -33,6 +38,7 @@
 import base64
 import json
 import os
+import random
 import re
 import subprocess
 import sys
@@ -431,6 +437,129 @@ def claim_travel(token, uid):
     return False, f"未领取: HTTP {st} code={code} {msg[:60]}"
 
 
+# ---------- 派猫出发(主动, 2026-11 新增) ----------
+#   GET  /activity/growth/buddy/travel/config   地点表(4 个: 咖啡馆/商场/健身房/古镇)
+#   POST /activity/growth/buddy/travel/depart   {"location_id": 1} 出发, 每日 1 次
+# 实测: 今日已用完 -> HTTP 403 msg="daily limit reached"; 空 body -> 400 invalid request
+TRAVEL_CONFIG_URL = "https://www.codebuddy.cn/activity/growth/buddy/travel/config"
+TRAVEL_DEPART_URL = "https://www.codebuddy.cn/activity/growth/buddy/travel/depart"
+
+
+def get_travel_locations(token, uid):
+    """目的地列表: [{id, code, name, duration_hours_min/max, reward_credit_min/max}]"""
+    st, body = _get(TRAVEL_CONFIG_URL, token, uid)
+    if body.get("code") != 0:
+        return []
+    data = body.get("data") or {}
+    locs = data.get("locations")
+    return locs if isinstance(locs, list) else []
+
+
+def pick_travel_location(locs, pref=""):
+    """按偏好挑目的地。pref 支持 id/code/名称, 留空或 random 则随机。"""
+    if not locs:
+        return None
+    pref = (pref or "").strip().lower()
+    if pref and pref not in ("random", "auto", "随机"):
+        for loc in locs:
+            keys = (str(loc.get("id")), str(loc.get("code") or "").lower(),
+                    str(loc.get("name") or "").lower())
+            if pref in keys:
+                return loc
+    return random.choice(locs)
+
+
+def depart_travel(token, uid, location_id):
+    """主动出发。返回 (ok, msg, data): ok=False 时 msg 说明原因(次数用完/已在旅行)。"""
+    st, body = _post(TRAVEL_DEPART_URL, token, uid, {"location_id": int(location_id)})
+    if st == 200 and body.get("code") == 0:
+        return True, "已出发", (body.get("data") or {})
+    msg = str(body.get("msg") or body.get("error_msg") or "").strip()
+    low = msg.lower()
+    if "daily limit" in low:
+        return False, "今日次数已用完", {}
+    if "traveling" in low or "already" in low:
+        return False, "已在旅行中", {}
+    if "invalid" in low:
+        return False, "参数无效(地点不存在)", {}
+    if "not available" in low:
+        return False, "该地点暂不可用", {}
+    return False, f"出发失败: HTTP {st} {msg[:40]}", {}
+
+
+def task_option(name, key, default=None):
+    """取任务的扩展配置, 如 tasks.cat_travel={"enabled":true,"location":"coffee"}。"""
+    src = panel_config().get("tasks")
+    if not isinstance(src, dict):
+        src = _load_config().get("tasks") or {}
+    val = src.get(name) if isinstance(src, dict) else None
+    if isinstance(val, dict):
+        return val.get(key, default)
+    return default
+
+
+def _eta_of(trip):
+    """返回 (剩余秒, 到达 HH:MM) —— 用服务端 server_now 对齐, 避免本机时区/时钟偏差。"""
+    arrive_at = trip.get("arrive_at")
+    now = trip.get("server_now")
+    if not arrive_at:
+        return None, "?"
+    remain = max(0, int(arrive_at) - int(now)) if now else None
+    arrive_str = datetime.fromtimestamp(int(arrive_at)).strftime("%H:%M")
+    return remain, arrive_str
+
+
+def travel_flow(token, uid, cat_name="猫猫", location_pref=""):
+    """一次完整派猫处理。返回 (推送行, flags)。
+
+    顺序: 途中 -> 报 ETA; 否则先试领奖; 领不到且今日还有名额 -> 自动出发。
+    flags: traveling/departed/claimed/limited/error, 供静默推送判断。
+    """
+    trip = get_travel_status(token, uid)
+    if trip is None:
+        return f"🐱 派猫旅行: {cat_name} 行程查询失败", {"error": True}
+
+    state = str(trip.get("state") or "")
+    loc = ((trip.get("location") or {}).get("name")) or ""
+    reward = trip.get("reward_credit")
+
+    if state == "traveling":
+        remain, arrive_str = _eta_of(trip)
+        return (f"🐱 派猫旅行: {cat_name} 在「{loc or '路上'}」旅行中, "
+                f"预计 {fmt_eta(remain)}后({arrive_str})到达"
+                + (f", 奖励 {fmt_credit(reward)} 积分" if reward else "")), {"traveling": True}
+
+    # 不在途中: 可能已到达待领奖
+    claimed, claim_msg = claim_travel(token, uid)
+    if claimed:
+        return (f"🎁 派猫旅行: {cat_name} 已到达「{loc or '目的地'}」, {claim_msg}"), {"claimed": True}
+
+    if trip.get("daily_limit_reached"):
+        detail = "奖励已领取" if "已领取" in claim_msg else ""
+        return (f"🐱 派猫旅行: {cat_name} 今日已完成"
+                + (f"({detail})" if detail else "")), {"limited": True}
+
+    # 空闲且还有名额 -> 主动出发
+    locs = get_travel_locations(token, uid)
+    target = pick_travel_location(locs, location_pref)
+    if not target:
+        return f"🐱 派猫旅行: {cat_name} 空闲, 但地点列表获取失败", {"error": True}
+
+    ok, dep_msg, _ = depart_travel(token, uid, target.get("id"))
+    if not ok:
+        if "次数已用完" in dep_msg or "已在旅行中" in dep_msg:
+            return f"🐱 派猫旅行: {cat_name} {dep_msg}", {"limited": True}
+        return f"🐱 派猫旅行: {cat_name} {dep_msg}", {"error": True}
+
+    trip2 = get_travel_status(token, uid) or {}
+    remain, arrive_str = _eta_of(trip2)
+    reward2 = trip2.get("reward_credit")
+    loc2 = ((trip2.get("location") or {}).get("name")) or target.get("name") or "目的地"
+    eta = f", 预计 {fmt_eta(remain)}后({arrive_str})到达" if remain is not None else ""
+    return (f"🐱 派猫旅行: {cat_name} 已出发「{loc2}」{eta}"
+            + (f", 奖励 {fmt_credit(reward2)} 积分" if reward2 else "")), {"departed": True}
+
+
 # ---------- 连登奖励(成长中心, 网页版 GrowthCenter 用同一套接口) ----------
 #   GET  /activity/growth/streak   连登天数/档位状态(available/claimed/locked)
 #   POST /activity/growth/redeem   {tier:"7d", client_token:<uuid>} 兑换档位
@@ -511,7 +640,7 @@ def _load_config():
 TASK_REGISTRY = [
     ("checkin",       "每日签到",   True, "查状态并幂等签到, 拿每日积分"),
     ("streak_reward", "连登奖励",   True, "连登档位(7/14/28天)达标后自动兑换能量/补登卡/积分/抽奖次数"),
-    ("cat_travel",    "派猫旅行",   True, "行程中报 ETA, 到达后自动领奖"),
+    ("cat_travel",    "派猫旅行",   True, "途中报 ETA, 到达自动领奖, 空闲且有当日名额时自动出发"),
 ]
 
 
@@ -916,7 +1045,12 @@ def push_wecom(lines, account, device, ip, note=""):
 # ---------- 主流程 ----------
 
 def process_account(token, uid, account, note, device, ip):
-    """单账号完整流程: 状态 -> 幂等签到 -> 积分 -> 本周 -> 旅行。返回推送行列表。"""
+    """单账号完整流程: 状态 -> 幂等签到 -> 积分 -> 本周 -> 连登 -> 派猫(自动出发/领奖)。
+
+    返回 (推送行列表, flags); flags 用于 decided 是否推送(静默模式)。
+    """
+    flags = {"checkin_new": False, "streak_claimed": False,
+             "travel_claimed": False, "travel_departed": False, "error": False}
     lines = [f"⏰ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"]
     age = token_age_desc(token)
     lines.append(f"🔑 token: {age or '有效期未知(非标准JWT)'}")
@@ -942,9 +1076,13 @@ def process_account(token, uid, account, note, device, ip):
         try:
             ok2, detail, _ = do_checkin(token, uid)
             lines.append(("✅ " if ok2 else "❌ ") + f"签到: {detail}")
+            flags["checkin_new"] = bool(ok2)
+            if not ok2:
+                flags["error"] = True
             log(lines[-1])
         except Exception as e:
             lines.append(f"❌ 签到异常: {e}")
+            flags["error"] = True
             log(lines[-1])
 
     # 3. 剩余积分(签到后查, 数值已含本次奖励)
@@ -971,43 +1109,45 @@ def process_account(token, uid, account, note, device, ip):
         try:
             got, streak_msg = claim_streak_rewards(token, uid)
             lines.append(("🎁 " if got else "🔥 ") + f"连登: {streak_msg}")
+            flags["streak_claimed"] = bool(got)
             log(lines[-1])
         except Exception as e:
             lines.append(f"⚠️ 连登奖励异常: {e}")
+            flags["error"] = True
             log(lines[-1])
 
-    # 6. 派猫旅行: 行程中报 ETA, 已到达则领奖, 均不影响推送
+    # 6. 派猫旅行: 途中报 ETA -> 到达领奖 -> 空闲且有名额则自动出发
     if not task_enabled("cat_travel"):
         log("⏭ 跳过派猫旅行(tasks.cat_travel=false)")
     else:
         try:
             buddy = get_buddy_info(token, uid)
             cat_name = buddy["name"] if buddy else "猫猫"
-            trip = get_travel_status(token, uid)
-            if trip and trip.get("state") == "traveling":
-                remain = trip.get("arrive_at") and trip.get("server_now") \
-                    and max(0, int(trip["arrive_at"]) - int(trip["server_now"]))
-                loc = ((trip.get("location") or {}).get("name")) or "未知目的地"
-                reward = trip.get("reward_credit")
-                eta = fmt_eta(remain)
-                arrive_at = trip.get("arrive_at")
-                arrive_str = datetime.fromtimestamp(int(arrive_at)).strftime("%H:%M") if arrive_at else "?"
-                lines.append(f"🐱 派猫旅行: {cat_name} 在「{loc}」旅行中, "
-                             f"预计 {eta} 后({arrive_str})到达"
-                             + (f", 奖励 {fmt_credit(reward)} 积分" if reward else ""))
-                log(lines[-1])
-            else:
-                claimed, travel_msg = claim_travel(token, uid)
-                lines.append(f"{'🎁' if claimed else '🐱'} 派猫旅行: {cat_name} {travel_msg}")
-                log(lines[-1])
+            line, tflags = travel_flow(token, uid, cat_name,
+                                      str(task_option("cat_travel", "location", "")))
+            lines.append(line)
+            flags["travel_claimed"] = bool(tflags.get("claimed"))
+            flags["travel_departed"] = bool(tflags.get("departed"))
+            if tflags.get("error"):
+                flags["error"] = True
+            log(line)
         except Exception as e:
             lines.append(f"⚠️ 派猫旅行异常: {e}")
+            flags["error"] = True
             log(lines[-1])
 
-    return lines
+    return lines, flags
 
 
-def run_all():
+def should_push(flags, quiet=False):
+    """是否推送: 正常模式总是推; 静默模式只在有实际收获(领到奖励)或出错时推。"""
+    if not quiet:
+        return True
+    return bool(flags.get("travel_claimed") or flags.get("streak_claimed")
+                or flags.get("error"))
+
+
+def run_all(quiet=False):
     pc = panel_config()
     accounts = pc["accounts"]
 
@@ -1022,13 +1162,17 @@ def run_all():
             note = str(a.get("note") or "")
             log(f"—— {device} ({machine}) | {account} ——")
             try:
-                lines = process_account(a["token"], str(a.get("uid") or ""),
-                                        account, note, device, ip)
+                lines, flags = process_account(a["token"], str(a.get("uid") or ""),
+                                               account, note, device, ip)
             except Exception as e:
                 lines = [f"⏰ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
                          f"❌ 执行异常: {str(e)[:120]}"]
+                flags = {"error": True}
                 log(lines[-1])
-            push_wecom(lines, account, device, ip, note)
+            if should_push(flags, quiet):
+                push_wecom(lines, account, device, ip, note)
+            else:
+                log("⏭ 静默模式: 无新增奖励, 跳过推送")
         return
 
     # 单账号模式(本机客户端自动解密)
@@ -1040,15 +1184,19 @@ def run_all():
     token, uid, source, account, note, device, ip = creds
     log(f"凭证来源: {source} | 账号: {account} | 设备: {device} ({ip}) | uid: {uid[:8]}...")
 
-    lines = process_account(token, uid, account, note, device, ip)
-    push_wecom(lines, account, device, ip, note)
+    lines, flags = process_account(token, uid, account, note, device, ip)
+    if should_push(flags, quiet):
+        push_wecom(lines, account, device, ip, note)
+    else:
+        log("⏭ 静默模式: 无新增奖励, 跳过推送")
 
 
 def main():
     arg = sys.argv[1] if len(sys.argv) > 1 else "run"
 
     if arg == "run":
-        run_all()
+        quiet = len(sys.argv) > 2 and sys.argv[2] in ("quiet", "--quiet", "silent")
+        run_all(quiet=quiet)
         return
 
     if arg == "push_server":
@@ -1112,11 +1260,10 @@ def main():
             got, msg = claim_streak_rewards(token, uid)
             print(msg)
             sys.exit(0 if got or "还差" in msg or "暂无" in msg else 1)
-    elif arg in ("cat_status", "cat_claim", "cat_start", "cat_reward"):
-        # cat_start/cat_reward 为旧命令名, 保留兼容: start 无接口(旅行自动进行),
-        # reward 等同 claim
+    elif arg in ("cat_status", "cat_claim", "cat_start", "cat_reward", "cat_depart"):
+        # cat_start/cat_reward 为旧命令名, 保留兼容; cat_depart = 空闲且有额度就出发
         print(f"账号: {account} | 设备: {device} ({ip})")
-        if arg == "cat_status" or arg == "cat_start":
+        if arg in ("cat_status", "cat_start"):
             buddy = get_buddy_info(token, uid)
             if buddy:
                 extra = f" | {buddy['personality']}" if buddy["personality"] else ""
@@ -1134,11 +1281,25 @@ def main():
                           f" | 奖励: {trip.get('reward_credit', '?')} 积分"
                           + (" | 今日次数已达上限" if trip.get("daily_limit_reached") else ""))
                 else:
-                    print(f"旅行状态: {state} @「{loc}」")
+                    print(f"旅行状态: {state}"
+                          + (" | 今日次数已达上限" if trip.get("daily_limit_reached") else " | 还有名额"))
             else:
                 print("行程状态查询失败")
+            # 空闲且有名额时列一下可选目的地, 方便配置 tasks.cat_travel.location
+            if trip and trip.get("state") != "traveling" and not trip.get("daily_limit_reached"):
+                locs = get_travel_locations(token, uid)
+                if locs:
+                    print("可选目的地: " + " / ".join(
+                        f"{l.get('name')}({l.get('code')} id={l.get('id')})" for l in locs))
             if arg == "cat_status" and buddy and buddy.get("poll_seconds"):
                 print(f"轮询间隔: {buddy['poll_seconds']} 秒")
+        elif arg == "cat_depart":
+            buddy = get_buddy_info(token, uid)
+            cat_name = buddy["name"] if buddy else "猫猫"
+            pref = str(task_option("cat_travel", "location", ""))
+            line, flags = travel_flow(token, uid, cat_name, pref)
+            print(line)
+            sys.exit(0 if not flags.get("error") else 1)
         else:
             trip = get_travel_status(token, uid)
             if trip and trip.get("state") == "traveling":
@@ -1152,7 +1313,8 @@ def main():
     else:
         print(f"未知命令: {arg}")
         print("用法: python workbuddy_checkin.py "
-              "[run|status|checkin|point|cat_status|cat_claim|push_server|tasks]")
+              "[run [quiet]|status|checkin|point|streak|streak_claim"
+              "|cat_status|cat_depart|cat_claim|push_server|tasks]")
         sys.exit(2)
 
 

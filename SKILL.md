@@ -3,7 +3,7 @@ name: workbuddy-auto-checkin
 display_name: WorkBuddy签到+积分查询+企微推送
 description: Buddy加油站每日签到（自动从本机 WorkBuddy 客户端解密登录态），幂等跳过已完成任务，一键执行后推送企微明细（含账号名、设备名、设备 IP 与剩余积分）
 author: 龙猫科技说复刻增强版（带积分）
-version: 1.6
+version: 1.7
 agent_created: true
 permissions:
   - http.fetch
@@ -12,6 +12,8 @@ trigger_words:
   - 积分签到
   - 检查签到状态
   - 派猫旅行
+  - 派猫出发
+  - 自动出发
   - 领取旅行奖励
   - 一键执行
   - 查询积分
@@ -33,9 +35,11 @@ trigger_words:
 
 派猫旅行（2026-11 更新，旧 `cat-travel-*` 已 404，不要再用）：
 - `GET /v2/activity/growth/buddy/info`：猫猫档案（name/rarity/personality）+ `poll_interval_seconds`
-- `GET /activity/growth/buddy/travel/status`：行程状态（`state=traveling`、`location.name` 目的地、`depart_at/arrive_at/server_now` Unix 秒可算 ETA、`reward_credit`、`daily_limit_reached`）
+- `GET /activity/growth/buddy/travel/status`：行程状态（`state=idle/traveling`、`location.name` 目的地、`depart_at/arrive_at/server_now` Unix 秒可算 ETA、`reward_credit`、`daily_limit_reached`）
+- `GET /activity/growth/buddy/travel/config`：目的地表 `locations[{id, code, name, duration_hours_min/max, reward_credit_min/max}]`（实测 4 个：咖啡馆/商场店铺/健身房/古镇客栈）
+- `POST /activity/growth/buddy/travel/depart` JSON `{"location_id": 1}`：**主动出发**，每日 1 次；今日已用完返回 403 `"daily limit reached"`，地点不存在返回 400 `"location not available"`，空 body 返回 400 `"invalid request"`
 - `POST /activity/growth/buddy/travel/claim`：领取到达奖励；未到达返回 403 `"not arrived yet"`
-- 旅行由服务端自动推进，**没有 start 接口**；到达后客户端收到 `growth.travel_arrival` 通知再领奖
+- 行程 1~4 小时随机，服务端自动推进；到达后 `state` 变回 `idle`，此时 claim 才能成功
 仍下线（404，不要重试）：`/v2/billing/meter/info`、`/v2/.../get-user-resource-summary`（带 `/v2` 的旧写法）。
 
 ## 鉴权（已实测打通）
@@ -65,13 +69,15 @@ cd "%USERPROFILE%\.workbuddy\skills\workbuddy-auto-checkin\scripts" && python wo
 
 | 用户指令 | 脚本命令 | 行为 |
 |---|---|---|
-| 一键执行 | `python workbuddy_checkin.py run` | 查状态 → 幂等签到 → 剩余积分 → 本周汇总 → 推送企微 |
+| 一键执行 | `python workbuddy_checkin.py run` | 查状态 → 幂等签到 → 剩余积分 → 本周汇总 → 连登领奖 → 派猫(领奖/出发) → 推送企微 |
+| 静默巡检 | `python workbuddy_checkin.py run quiet` | 同上，但**只有真领到奖励或出错才推送**（适合一天多档补充巡检） |
 | 检查签到状态 | `python workbuddy_checkin.py status` | 仅查询签到状态/连签/本周进度 |
 | 签到 | `python workbuddy_checkin.py checkin` | 未签则签，已签幂等跳过 |
 | 查询积分 | `python workbuddy_checkin.py point` | 剩余积分总额 + 额度分项 + 今日/连签 |
 | 查询连登奖励 | `python workbuddy_checkin.py streak` | 连登天数 + 7/14/28 天档位状态与奖励 |
 | 领取连登奖励 | `python workbuddy_checkin.py streak_claim` | 领取所有可领档位，未达标明确提示不算失败 |
-| 查询猫猫档案 | `python workbuddy_checkin.py cat_status` | 猫猫昵称/稀有度/性格 + 旅行目的地/ETA/奖励 |
+| 查询猫猫档案 | `python workbuddy_checkin.py cat_status` | 猫猫昵称/稀有度/性格 + 行程/ETA/奖励 + 空闲时列可选目的地 |
+| 派猫出发 | `python workbuddy_checkin.py cat_depart` | 空闲且有当日名额就出发（地点按 `tasks.cat_travel.location`，默认随机） |
 | 领取旅行奖励 | `python workbuddy_checkin.py cat_claim` | 到达则领奖，未到达明确提示不算失败 |
 | 推送到青龙面板 | `python workbuddy_checkin.py push_server` | 本机登录态 -> 面板 `WORKBUDDY_CONFIG`（按 MAC 幂等合并，保留 webhook/tasks）
 | 查看任务开关 | `python workbuddy_checkin.py tasks` | 列出各活动是否启用及配置来源（config.json `tasks` / 面板 `WORKBUDDY_CONFIG.tasks`） |
@@ -79,6 +85,12 @@ cd "%USERPROFILE%\.workbuddy\skills\workbuddy-auto-checkin\scripts" && python wo
 青龙多账号：面板**只需一个**环境变量 `WORKBUDDY_CONFIG`（JSON：`accounts` + `qw_webhook` + `tasks`），存在 `accounts` 时 `run` 自动逐台执行并分别推送企微。旧变量 `WB_ACCOUNTS`/`QW_WEBHOOK`/`WB_TASKS` 仍兼容读取，`push_server` 会自动合并并清理。面板应用凭证（`ql_url`/`ql_client_id`/`ql_client_secret`）配置在本机 `config.json`，应用权限只勾「环境变量」。
 
 任务开关：`config.json` 的 `tasks`（或面板 `WORKBUDDY_CONFIG.tasks`）控制哪些活动自动执行，如 `{"checkin": true, "cat_travel": false}`。**全局一份，对所有账号/机器生效**；未写的任务按启用处理。用户说「不要跑某个活动」时改这里，不要改代码。
+
+任务还可以写成对象附带参数，目前只有 `cat_travel` 支持 `location`（目的地 id / code / 中文名，缺省或 `random` 则随机）：
+
+```json
+{ "tasks": { "cat_travel": { "enabled": true, "location": "coffee" } } }
+```
 
 完整实现说明、配置项、常见问题见同目录 `README.md`。
 

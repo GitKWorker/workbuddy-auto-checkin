@@ -14,10 +14,12 @@ WorkBuddy（Buddy 加油站）每日自动签到 + 积分查询 + 企业微信�
 | 每日签到 | 未签到则签到，已签到按幂等处理（不报错、不重复领） |
 | 状态查询 | 今日是否已签、连签天数、本周进度、每日/今日积分 |
 | 剩余积分 | 账户积分总额 + 套餐名 + 各额度分组剩余/总额 |
+| 连登奖励 | 连登 7/14/28 天档位达标后自动兑换能量/补登卡/积分/抽奖次数 |
+| 派猫旅行 | 有空余名额自动出发（地点可选/随机），到达自动领奖，途中报 ETA |
 | 企微推送 | 一键执行后推送明细，含账号名、设备名、设备 IP |
 | 多账号/多机区分 | 每台机器推送自带主机名与 IP，一个群里也分得清 |
 
-派猫旅行已接入新版接口（2026-11）：旅行由服务端自动推进，`run` 一键执行时会顺带尝试领取到达奖励；`cat_status` 查猫猫档案，`cat_claim` 手动领取。旧 `cat-travel-*` 接口已永久 404，不要再用。
+派猫旅行已接入新版接口（2026-11）：`run` 一次做完「到达领奖 / 空闲则主动出发 / 途中报 ETA」；`cat_status` 查档案与可选目的地，`cat_depart` 手动出发，`cat_claim` 手动领奖。旧 `cat-travel-*` 接口已永久 404，不要再用。
 
 ---
 
@@ -29,7 +31,7 @@ WorkBuddy（Buddy 加油站）每日自动签到 + 积分查询 + 企业微信�
 | 操作系统 | Windows 11 | macOS 有路径兼容代码但未验证 |
 | Python | 3.13 | 仅用标准库，无第三方依赖，3.8+ 应均可运行 |
 
-> 接口与客户端版本强相关：签到/积分走 `/v2/billing/meter/*`，派猫旅行走 `/activity/growth/buddy/travel/claim`（从 5.9.3 客户端 `app.asar` 中提取）。官方升级客户端后接口可能变动，届时对照 `resources/app.asar` 里的实际路由同步修改脚本常量（`API_BASE` / `BALANCE_PATH` / `TRAVEL_CLAIM_URL`）。
+> 接口与客户端版本强相关：签到/积分走 `/v2/billing/meter/*`，派猫旅行走 `/activity/growth/buddy/travel/*`（从 5.9.3 客户端提取，2026-11 接口大改）。官方升级客户端后接口可能变动，届时对照 `resources/app.asar` 里的实际路由同步修改脚本常量（`API_BASE` / `BALANCE_PATH` / `TRAVEL_*_URL`）。
 
 ---
 
@@ -49,10 +51,15 @@ WorkBuddy（Buddy 加油站）每日自动签到 + 积分查询 + 企业微信�
 
 ```bash
 cd "%USERPROFILE%\.workbuddy\skills\workbuddy-auto-checkin\scripts"
-python workbuddy_checkin.py run       # 一键：签到 + 积分 + 推送
-python workbuddy_checkin.py status    # 只看签到状态
-python workbuddy_checkin.py checkin   # 只签到（幂等）
-python workbuddy_checkin.py point     # 只看剩余积分
+python workbuddy_checkin.py run          # 一键：签到 + 积分 + 连登 + 派猫 + 推送
+python workbuddy_checkin.py run quiet    # 静默跑，只在领到奖励/出错时推送
+python workbuddy_checkin.py status       # 只看签到状态
+python workbuddy_checkin.py checkin      # 只签到（幂等）
+python workbuddy_checkin.py point        # 只看剩余积分
+python workbuddy_checkin.py streak       # 只看连登档位（streak_claim 领取）
+python workbuddy_checkin.py cat_status   # 猫猫档案 + 行程 + 可选目的地
+python workbuddy_checkin.py cat_depart   # 有空名额就派猫出发
+python workbuddy_checkin.py cat_claim    # 到达则领奖
 ```
 
 只依赖 Python 标准库，**无需 pip 安装任何包**（Python 3.8+）。
@@ -120,7 +127,29 @@ POST https://www.codebuddy.cn/billing/meter/get-user-resource-summary
 
 前缀差异不是笔误：客户端里签到用 `billingPrefix`（`/v2`），积分用 `resourcePrefix`（空字符串），两条路由挂在不同的网关路径上。
 
-### 3.4 连登奖励（成长中心 growth-center）
+### 3.4 派猫旅行（主动出发 + 领奖）
+
+旧 `cat-travel-*` 接口已永久 404，2026-11 客户端改成了这一套：
+
+| 用途 | 接口 | 说明 |
+|---|---|---|
+| 猫猫档案 | `GET /v2/activity/growth/buddy/info` | 昵称/稀有度/性格 + `poll_interval_seconds` |
+| 行程状态 | `GET /activity/growth/buddy/travel/status` | `state`(idle/traveling)、`location.name`、`arrive_at`/`server_now`、`reward_credit`、`daily_limit_reached` |
+| 目的地表 | `GET /activity/growth/buddy/travel/config` | 4 个地点：咖啡馆/商场店铺/健身房/古镇客栈，各 1~4 小时、5~10 积分 |
+| 主动出发 | `POST /activity/growth/buddy/travel/depart` | body `{"location_id": 1}`，**每日 1 次** |
+| 领取奖励 | `POST /activity/growth/buddy/travel/claim` | 未到达返回 403 `not arrived yet` |
+
+`depart` 的报错很清楚：今日已用完 → 403 `daily limit reached`；地点不存在 → 400 `location not available`；空 body → 400 `invalid request`。
+
+所以 `run` 里的派猫顺序是：**途中**报 ETA → 否则先试领奖 → 领不到且 `daily_limit_reached=false` 就自动出发。目的地默认随机，也可以固定（见 6.1）：
+
+```json
+{ "tasks": { "cat_travel": { "enabled": true, "location": "coffee" } } }
+```
+
+行程 1~4 小时随机，服务端自动推进，所以**一次 9:05 跑完是拿不到奖励的**：出发后要再过几个小时才到达。定时任务因此拆成「早上出发 + 白天静默巡检领奖」，见第 7 节。
+
+### 3.5 连登奖励（成长中心 growth-center）
 
 网页版 `www.workbuddy.cn/profile/growth-center` 与脚本用同一套接口：
 
@@ -132,14 +161,14 @@ POST https://www.codebuddy.cn/billing/meter/get-user-resource-summary
 档位规则：7 天档（能量 2 / 补登卡 1 / 抽奖 1）、14 天档（+50 积分）、28 天档（+150 积分）；**每档每月限兑 1 次**，连登天数每月清零重算，兑换不扣减连登天数。
 档位状态 `locked`（未达标）/ `available`（可领）/ `claimed`（本月已领），脚本只对 `available` 发起兑换。
 
-### 3.5 幂等
+### 3.6 幂等
 
 - 签到成功：`code=0`
 - 今日已签到：`code=10001`，且**以 HTTP 400 返回**，业务 JSON 在 body 里 —— 脚本按「成功 + 跳过」处理，不当失败。
 
 所以一天跑多次、多个定时任务重叠，都不会报错或重复领取。
 
-### 3.6 推送内容
+### 3.7 推送内容
 
 ```
 【WorkBuddy 自动签到】
@@ -155,8 +184,19 @@ POST https://www.codebuddy.cn/billing/meter/get-user-resource-summary
    └ 套餐基础积分 384.06/500 · 平台奖励积分 400/400
 📅 本周: 4/7 天 (每日 100 积分)
 🔥 连登: 4 天, 距 7天档还差 3 天        ← 有档位可领时变为 🎁 连登: 已领取 7天档(能量+2 补登卡+1 抽奖次数+1)
-🐱 派猫旅行: 暗影喵 在「咖啡馆」旅行中, 预计 56分钟 后(17:17)到达, 奖励 6 积分
+🐱 派猫旅行: 暗影喵 在「咖啡馆」旅行中, 预计 56分钟后(17:17)到达, 奖励 6 积分
 ```
+
+派猫这一行有四种形态：
+
+```
+🐱 派猫旅行: 暗影喵 已出发「健身房」, 预计 2小时45分后(11:02)到达        ← 本轮自动出发
+🎁 派猫旅行: 暗影喵 已到达「健身房」, 领取成功, 奖励 8 积分              ← 到达并领到奖
+🐱 派猫旅行: 暗影喵 在「咖啡馆」旅行中, 预计 56分钟后(17:17)到达, 奖励 6 积分
+🐱 派猫旅行: 暗影喵 今日已完成(奖励已领取)                              ← 今日 1 次已用完
+```
+
+`run quiet` 静默模式（见第 7 节）只有出现 🎁 领奖或报错时才推送，其余情况只在终端打日志，不刷群。
 
 - 内网 IP 用 UDP `connect` 探测默认出口地址获取（**不实际发包**）
 - 公网 IP 走 `api.ipify.org`，3 秒超时，失败自动省略该行，不影响推送
@@ -248,13 +288,13 @@ webhook key 获取：企业微信群 → 右上角「…」→ 群机器人 → 
 |---|---|---|
 | `checkin` | ✅ 启用 | 查状态 + 幂等签到，拿每日积分 |
 | `streak_reward` | ✅ 启用 | 连登档位（7/14/28 天）达标后自动兑换能量/补登卡/积分/抽奖次数 |
-| `cat_travel` | ✅ 启用 | 行程中报 ETA，到达后自动领奖 |
+| `cat_travel` | ✅ 启用 | 途中报 ETA，到达自动领奖，空闲且有当日名额时自动出发 |
 | _未登记的新任务_ | ✅ 启用 | 配置里没写的任务按启用处理，方便灰度上线 |
 
 规则与细节：
 
 - **只写要改的**：未出现的任务走默认值（启用），不必列全
-- **也接受带参数的写法**：`{"cat_travel": {"enabled": false}}`，为将来需要参数的任务（如指定阈值）留了口子
+- **也接受带参数的写法**：`{"cat_travel": {"enabled": true, "location": "coffee"}}`；`location` 支持 `id`/`code`/中文名，缺省或 `random` 则每次随机挑目的地
 - **禁用后推送里不出现该行**，只在日志里留一句「⏭ 跳过 …」，保持消息干净
 - **单任务异常不影响其他任务**：某个活动接口挂了只在推送里标 `⚠️ 异常`，签到照常
 - 查看当前生效状态：`python workbuddy_checkin.py tasks`
@@ -263,7 +303,7 @@ webhook key 获取：企业微信群 → 右上角「…」→ 群机器人 → 
 $ python workbuddy_checkin.py tasks
 任务开关(来源: config:config.json)
   checkin      每日签到     ✅ 启用   查状态并幂等签到, 拿每日积分
-  cat_travel   派猫旅行     ⏸ 禁用  (已覆盖默认)   行程中报 ETA, 到达后自动领奖
+  cat_travel   派猫旅行     ✅ 启用   途中报 ETA, 到达自动领奖, 空闲且有当日名额时自动出发
 ```
 
 ### 6.2 新增一个活动（开发者）
@@ -278,11 +318,24 @@ $ python workbuddy_checkin.py tasks
 
 ## 7. 定时执行（可选）
 
-Windows 任务计划每天 9:00 跑一次：
+**建议一天跑多档**：派猫出发后 1~4 小时才到达，只跑一次 9:05 永远领不到奖励。推荐「早上一次完整推送 + 白天每 2 小时静默巡检」：
+
+```bash
+python workbuddy_checkin.py run          # 9:05 完整跑 + 推送（签到/连登/出发）
+python workbuddy_checkin.py run quiet    # 11:05 / 13:05 … 静默跑，只在领到奖励或出错时推送
+```
+
+Windows 任务计划里就是两条触发器：
 
 ```powershell
-schtasks /create /tn "WorkBuddy签到" /tr "python \"%USERPROFILE%\.workbuddy\skills\workbuddy-auto-checkin\scripts\workbuddy_checkin.py\" run" /sc daily /st 09:00
+# 触发1: 每天 9:05 完整执行
+schtasks /create /tn "WorkBuddy签到" /tr "python \"%USERPROFILE%\.workbuddy\skills\workbuddy-auto-checkin\scripts\workbuddy_checkin.py\" run" /sc daily /st 09:05
+
+# 触发2: 白天每 2 小时静默巡检（11:05 起，共 6 档）
+schtasks /create /tn "WorkBuddy巡检" /tr "python \"%USERPROFILE%\.workbuddy\skills\workbuddy-auto-checkin\scripts\workbuddy_checkin.py\" run quiet" /sc daily /st 11:05 /ri 120 /du 12:00
 ```
+
+`run quiet` 的判定很简单：**本轮真领到连登档位 / 旅行奖励，或出现错误**才推送，其余情况只在终端打日志。所以白天那些档位不会刷群，到达领奖那一次会单独推一条 `🎁 派猫旅行: … 领取成功, 奖励 8 积分`。
 
 注意：定时任务运行在用户会话下才能读到客户端登录态（勾选「只在用户登录时运行」）。
 
@@ -325,8 +378,9 @@ python3 scripts/workbuddy_checkin.py run   # 先手动跑一次验证
 
 ```bash
 crontab -e
-# 每天 9:05 执行
+# 每天 9:05 完整跑(推送), 白天 11-21 点每 2 小时静默巡检(只在领到奖励/出错时推送)
 5 9 * * * cd ~/wb-checkin && /usr/bin/python3 scripts/workbuddy_checkin.py run >> checkin.log 2>&1
+5 11-21/2 * * * cd ~/wb-checkin && /usr/bin/python3 scripts/workbuddy_checkin.py run quiet >> checkin.log 2>&1
 ```
 
 **注意事项**
@@ -344,7 +398,9 @@ crontab -e
 
 1. 系统设置 → 应用设置 → 新建应用，权限**只勾「环境变量」**，得到 Client ID / Client Secret
 2. 订阅管理 → 新建订阅：仓库 `GitKWorker/workbuddy-auto-checkin`（脚本更新自动同步）
-3. 定时任务 → 新建：命令 `task workbuddy_checkin.py run`，cron `5 9 * * *`
+3. 定时任务 → 新建**两条**：
+   - 完整执行（推送）：命令 `task workbuddy_checkin.py run`，cron `5 9 * * *`
+   - 静默巡检（只在领到奖励/出错时推送）：命令 `task workbuddy_checkin.py run quiet`，cron `5 11-21/2 * * *`
 
 环境变量 `WORKBUDDY_CONFIG` **无需手动建**——本机首次推送时自动创建，面板上只有这**一个**变量，包含账号、webhook、任务开关三部分：
 
@@ -422,7 +478,8 @@ A：不会。`code=10001` 按幂等成功处理。
 
 - 仅在 Windows + WorkBuddy 桌面客户端下实测通过（macOS 路径有兼容代码但未验证）
 - 依赖客户端在线登录，不能脱离客户端在服务器上跑（密钥取不到）
-- 派猫旅行走新版 `/activity/growth/buddy/travel/claim`，未到达时仅提示不重试；若官方再调整路径需同步修改 `TRAVEL_CLAIM_URL`
+- 派猫旅行走新版 `/activity/growth/buddy/travel/{status,config,depart,claim}`，未到达时仅提示不重试；若官方再调整路径需同步修改 `TRAVEL_*_URL`
+- 派猫每日只能出发 1 次，行程 1~4 小时；只跑一次定时任务拿不到奖励，需要白天多次巡检（见第 7 节）
 - 积分接口属客户端内部路由，若官方调整路径需同步修改 `BALANCE_PATH`
 
 ---
@@ -431,6 +488,8 @@ A：不会。`code=10001` 按幂等成功处理。
 
 | 版本 | 变更 |
 |---|---|
+| 1.8 | 派猫旅行支持**主动出发**（`travel/config` 地点表 + `travel/depart`，每日 1 次，地点可指定或随机）；新增 `cat_depart` 命令与 `run quiet` 静默巡检（只在领到奖励/出错时推送） |
+| 1.7 | 新增连登奖励（`streak` / `streak_claim`，7/14/28 天档位自动兑换）；多客户端凭证与任务开关收敛到面板单一变量 `WORKBUDDY_CONFIG` |
 | 1.6 | 推送增加设备 IP 与剩余积分（含额度分项）；修正积分接口真实路径（去 `/v2`）与 403 陷阱 |
 | 1.5 | 推送增加账号名（昵称 + 掩码手机号）与设备名 |
 | 1.4 | 打通登录态自动解密（`wb_auth_helper.js`），不再需要手工 Cookie |
