@@ -204,6 +204,56 @@ schtasks /create /tn "WorkBuddy签到" /tr "python \"%USERPROFILE%\.workbuddy\sk
 
 注意：定时任务运行在用户会话下才能读到客户端登录态（勾选「只在用户登录时运行」）。
 
+### 7.1 服务器部署（脱离本机客户端）
+
+本机客户端离线也能跑：把明文 token 部署到任意一台有 Python 3.8+ 的服务器（Linux VPS / NAS 均可），脚本无第三方依赖。
+
+**第一步：在本机提取 token 与 uid**
+
+客户端在线时执行（token 只打印到屏幕，不落盘）：
+
+```powershell
+python scripts\wb_auth_helper.js  # 用法见文件头注释; 或:
+python -c "import sys; sys.path.insert(0,'scripts'); import workbuddy_checkin as w; \
+c=w._decrypt_local_auth(); print('token:', c[0][:40]+'...'); print('uid:', c[1])"
+```
+
+记下输出的完整 token（JWT）和 `user_id`。
+
+**第二步：在服务器上配置**
+
+```bash
+# 传输 token 用 scp / 密码管理器, 千万不要走 git 或聊天记录明文
+mkdir -p ~/wb-checkin && cd ~/wb-checkin
+# 放入 scripts/workbuddy_checkin.py（可整个仓库 clone, config.json 不在仓库里）
+cat > config.json << 'EOF'
+{
+  "qw_webhook": "你的企微webhook key",
+  "access_token": "粘贴JWT",
+  "user_id": "粘贴uid",
+  "account_name": "兰心",       // 仅显示用
+  "device_name": "云端服务器"   // 推送里区分来源
+}
+EOF
+chmod 600 config.json            # 关键: 限权, 只有当前用户可读
+python3 scripts/workbuddy_checkin.py run   # 先手动跑一次验证
+```
+
+**第三步：crontab 定时**
+
+```bash
+crontab -e
+# 每天 9:05 执行
+5 9 * * * cd ~/wb-checkin && /usr/bin/python3 scripts/workbuddy_checkin.py run >> checkin.log 2>&1
+```
+
+**注意事项**
+
+- ⚠️ **token 等同账号密码**：不要提交进任何 git 仓库（`.gitignore` 已挡 `config.json`，但别复制到别处再提交）；服务器被入侵 = 账号被盗，建议只在内网/可信机器上跑
+- **token 约 55 天过期**，且客户端重新登录后会更换。过期后脚本会报 401，回本机重跑第一步提取新 token 更新服务器配置即可
+- 服务器上无法自动续期（解密依赖本机客户端），这是唯一的维护成本
+- 签到/积分/旅行接口实测对来源 IP 无限制，公网 VPS 可正常调用
+
 ---
 
 ## 8. 常见问题
