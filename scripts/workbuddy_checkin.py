@@ -45,9 +45,11 @@ TIMEOUT = 30
 BALANCE_PATH = "/billing/meter/get-user-resource-summary"
 
 # 派猫旅行(2026-11 客户端新版接口, 旧 /v2/billing/meter/cat-travel-* 已下线):
-#   GET  /v2/activity/growth/buddy/info         猫猫档案(服务端自动旅行, 客户端每 poll_interval 秒轮询)
-#   POST /activity/growth/buddy/travel/claim    领取到达奖励(未到达返回 403 "not arrived yet")
+#   GET  /v2/activity/growth/buddy/info              猫猫档案(服务端自动旅行, 客户端每 poll_interval 秒轮询)
+#   GET  /activity/growth/buddy/travel/status        行程状态(state/location/arrive_at/reward_credit)
+#   POST /activity/growth/buddy/travel/claim         领取到达奖励(未到达返回 403 "not arrived yet")
 BUDDY_INFO_URL = "https://www.codebuddy.cn/v2/activity/growth/buddy/info"
+TRAVEL_STATUS_URL = "https://www.codebuddy.cn/activity/growth/buddy/travel/status"
 TRAVEL_CLAIM_URL = "https://www.codebuddy.cn/activity/growth/buddy/travel/claim"
 
 # 幂等错误码: 不算失败
@@ -379,6 +381,31 @@ def get_buddy_info(token, uid):
     }
 
 
+def get_travel_status(token, uid):
+    """行程状态。返回 dict 或 None。
+
+    实测字段: state(traveling/...), location{name, duration_hours},
+    depart_at/arrive_at/server_now(Unix 秒), reward_credit, daily_limit_reached
+    """
+    st, body = _get(TRAVEL_STATUS_URL, token, uid)
+    data = body.get("data")
+    if body.get("code") != 0 or not isinstance(data, dict):
+        return None
+    return data
+
+
+def fmt_eta(seconds):
+    """秒数 -> '2小时29分' / '45分钟' / '不到1分钟'。"""
+    if seconds is None or seconds < 0:
+        return "?"
+    m = int(seconds // 60)
+    if m < 1:
+        return "不到1分钟"
+    if m < 60:
+        return f"{m}分钟"
+    return f"{m // 60}小时{m % 60:02d}分"
+
+
 def claim_travel(token, uid):
     """尝试领取旅行奖励。返回 (claimed, msg)。
 
@@ -504,12 +531,26 @@ def run_all():
                      f"(每日 {data.get('daily_credit', '?')} 积分)")
         log(lines[-1])
 
-    # 5. 派猫旅行奖励(到达才领, 未到达不影响推送)
+    # 5. 派猫旅行: 行程中报 ETA, 已到达则领奖, 均不影响推送
     buddy = get_buddy_info(token, uid)
     cat_name = buddy["name"] if buddy else "猫猫"
-    claimed, travel_msg = claim_travel(token, uid)
-    lines.append(f"{'🎁' if claimed else '🐱'} 派猫旅行: {cat_name} {travel_msg}")
-    log(lines[-1])
+    trip = get_travel_status(token, uid)
+    if trip and trip.get("state") == "traveling":
+        remain = trip.get("arrive_at") and trip.get("server_now") \
+            and max(0, int(trip["arrive_at"]) - int(trip["server_now"]))
+        loc = ((trip.get("location") or {}).get("name")) or "未知目的地"
+        reward = trip.get("reward_credit")
+        eta = fmt_eta(remain)
+        arrive_at = trip.get("arrive_at")
+        arrive_str = datetime.fromtimestamp(int(arrive_at)).strftime("%H:%M") if arrive_at else "?"
+        lines.append(f"🐱 派猫旅行: {cat_name} 在「{loc}」旅行中, "
+                     f"预计 {eta} 后({arrive_str})到达"
+                     + (f", 奖励 {fmt_credit(reward)} 积分" if reward else ""))
+        log(lines[-1])
+    else:
+        claimed, travel_msg = claim_travel(token, uid)
+        lines.append(f"{'🎁' if claimed else '🐱'} 派猫旅行: {cat_name} {travel_msg}")
+        log(lines[-1])
 
     push_wecom(lines, account, device, ip, note)
 
@@ -564,12 +605,31 @@ def main():
             if buddy:
                 extra = f" | {buddy['personality']}" if buddy["personality"] else ""
                 print(f"猫猫: {buddy['name'] or '?'} ({buddy['rarity'] or '?'}{extra})")
-                if buddy["poll_seconds"]:
-                    print(f"旅行轮询间隔: {buddy['poll_seconds']} 秒(旅行由服务端自动推进)")
             else:
                 print("猫猫档案查询失败(接口可能变更, 请检查客户端新版本)")
-                sys.exit(1)
+            trip = get_travel_status(token, uid)
+            if trip:
+                state = trip.get("state", "?")
+                loc = ((trip.get("location") or {}).get("name")) or "?"
+                if state == "traveling":
+                    remain = trip.get("arrive_at") and trip.get("server_now") \
+                        and max(0, int(trip["arrive_at"]) - int(trip["server_now"]))
+                    print(f"旅行: 在「{loc}」途中, 剩余 {fmt_eta(remain)}"
+                          f" | 奖励: {trip.get('reward_credit', '?')} 积分"
+                          + (" | 今日次数已达上限" if trip.get("daily_limit_reached") else ""))
+                else:
+                    print(f"旅行状态: {state} @「{loc}」")
+            else:
+                print("行程状态查询失败")
+            if arg == "cat_status" and buddy and buddy.get("poll_seconds"):
+                print(f"轮询间隔: {buddy['poll_seconds']} 秒")
         else:
+            trip = get_travel_status(token, uid)
+            if trip and trip.get("state") == "traveling":
+                remain = trip.get("arrive_at") and trip.get("server_now") \
+                    and max(0, int(trip["arrive_at"]) - int(trip["server_now"]))
+                print(f"派猫旅行: 旅行中, 剩余 {fmt_eta(remain)}, 到达后再执行 cat_claim")
+                sys.exit(0)
             claimed, msg = claim_travel(token, uid)
             print(f"派猫旅行: {msg}")
             sys.exit(0 if claimed or "尚未到达" in msg or "已领取" in msg else 1)

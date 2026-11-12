@@ -33,6 +33,7 @@ trigger_words:
 
 派猫旅行（2026-11 更新，旧 `cat-travel-*` 已 404，不要再用）：
 - `GET /v2/activity/growth/buddy/info`：猫猫档案（name/rarity/personality）+ `poll_interval_seconds`
+- `GET /activity/growth/buddy/travel/status`：行程状态（`state=traveling`、`location.name` 目的地、`depart_at/arrive_at/server_now` Unix 秒可算 ETA、`reward_credit`、`daily_limit_reached`）
 - `POST /activity/growth/buddy/travel/claim`：领取到达奖励；未到达返回 403 `"not arrived yet"`
 - 旅行由服务端自动推进，**没有 start 接口**；到达后客户端收到 `growth.travel_arrival` 通知再领奖
 仍下线（404，不要重试）：`/v2/billing/meter/info`、`/v2/.../get-user-resource-summary`（带 `/v2` 的旧写法）。
