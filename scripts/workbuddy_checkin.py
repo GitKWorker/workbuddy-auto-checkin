@@ -1,13 +1,15 @@
 # -*- coding: utf-8 -*-
 # workbuddy-auto-checkin: WorkBuddy(Buddy加油站)每日签到 + 企微推送
 #
-# 命令: run(默认) / status / checkin / point / cat_status / cat_claim
-#   run        一键: 查状态 -> 未签则签到 -> 查积分 -> 尝试领取旅行奖励 -> 汇总 -> 推送企微
-#   status     仅查询签到状态(连签天数/本周进度)
-#   checkin    未签到则签到, 已签到幂等跳过
-#   point      查询积分余额(接口已下线时会明确提示)
-#   cat_status 查询猫猫(昵称/稀有度)与旅行轮询间隔
-#   cat_claim  尝试领取派猫旅行奖励(未到达时明确提示, 不算失败)
+# 命令: run(默认) / status / checkin / point / cat_status / cat_claim / push_server
+#   run         一键: 查状态 -> 未签则签到 -> 查积分 -> 尝试领取旅行奖励 -> 汇总 -> 推送企微
+#               若存在 WB_ACCOUNTS 环境变量(JSON数组)则多账号模式: 逐台执行并分别推送
+#   status      仅查询签到状态(连签天数/本周进度)
+#   checkin     未签到则签到, 已签到幂等跳过
+#   point       查询积分余额(接口已下线时会明确提示)
+#   cat_status  查询猫猫(昵称/稀有度)与旅行行程(目的地/ETA/奖励)
+#   cat_claim   尝试领取派猫旅行奖励(未到达时明确提示, 不算失败)
+#   push_server 把本机最新登录态推送到青龙面板(单一 WB_ACCOUNTS JSON 环境变量, 按 MAC 幂等合并)
 #
 # 凭证自动解析(按优先级, 全程不落盘):
 #   1. 环境变量 WORKBUDDY_ACCESS_TOKEN / CODEBUDDY_ACCESS_TOKEN (明文 JWT)
@@ -28,12 +30,15 @@
 # 推送内容包含: 账号名(客户端昵称 + 掩码手机号) / 设备名 / 设备 IP /
 #               签到状态与本周进度 / 剩余积分(含额度分项)
 
+import base64
 import json
 import os
+import re
 import subprocess
 import sys
 import urllib.error
 import urllib.request
+import uuid
 from datetime import datetime
 from pathlib import Path
 
@@ -438,6 +443,173 @@ def _load_config():
         return {}
 
 
+# ---------- 青龙面板推送(方案一: 单一 WB_ACCOUNTS JSON 环境变量) ----------
+
+QL_ENV_NAME = "WB_ACCOUNTS"
+
+
+def _ql_conf():
+    """青龙面板连接配置: 环境变量 > config.json。"""
+    cfg = _load_config()
+    url = (os.environ.get("QL_URL") or str(cfg.get("ql_url", ""))).strip().rstrip("/")
+    cid = (os.environ.get("QL_CLIENT_ID") or str(cfg.get("ql_client_id", ""))).strip()
+    csec = (os.environ.get("QL_CLIENT_SECRET") or str(cfg.get("ql_client_secret", ""))).strip()
+    return url, cid, csec
+
+
+def _physical_macs():
+    """枚举物理网卡 MAC(12位大写十六进制, 无分隔符), 按可用性排序。"""
+    out = []
+    if os.name == "nt":
+        try:
+            proc = subprocess.run(["getmac", "/fo", "csv", "/nh"],
+                                  capture_output=True, timeout=10)
+            # 中文 Windows 下 getmac 输出是 GBK 编码
+            try:
+                text = proc.stdout.decode("utf-8")
+            except UnicodeDecodeError:
+                text = proc.stdout.decode("gbk", errors="replace")
+            for line in text.splitlines():
+                m = line.split(",")[0].strip().strip('"')
+                m = m.replace("-", "").replace(":", "").upper()
+                if len(m) == 12 and all(c in "0123456789ABCDEF" for c in m) \
+                        and m != "0" * 12:
+                    out.append(m)
+        except Exception:
+            pass
+    else:
+        try:
+            for d in Path("/sys/class/net").iterdir():
+                if d.name == "lo" or (d / "virtual").exists():
+                    continue
+                addr = (d / "address").read_text().strip().replace(":", "").upper()
+                if len(addr) == 12 and addr != "0" * 12:
+                    out.append(addr)
+        except Exception:
+            pass
+    # 过滤随机化 Wi-Fi MAC(组播位=1)但保留在最后兜底, 真实网卡(本地管理/ universally administered)优先
+    real = [m for m in out if not (int(m[:2], 16) & 0x01)]
+    return real + [m for m in out if int(m[:2], 16) & 0x01]
+
+
+def machine_id():
+    """机器标识: WB_MACHINE_ID 覆盖 > 物理网卡 MAC(12位大写十六进制) > 主机名。"""
+    mid = os.environ.get("WB_MACHINE_ID", "").strip().upper()
+    if mid:
+        return re.sub(r"[^A-Z0-9-]", "", mid) or "UNKNOWN"
+    macs = _physical_macs()
+    if macs:
+        return macs[0]
+    mac = f"{uuid.getnode():012X}"
+    if int(mac[:2], 16) & 0x01:  # 组播位=1 说明是随机化的假 MAC
+        import socket
+        host = re.sub(r"[^A-Z0-9]", "", socket.gethostname().upper())[:10]
+        return f"HOST-{host}" if host else "UNKNOWN"
+    return mac
+
+
+def _ql_req(base, path, token=None, method="GET", payload=None):
+    headers = {"Content-Type": "application/json", "Accept": "application/json"}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    req = urllib.request.Request(
+        base + path,
+        data=json.dumps(payload).encode("utf-8") if payload is not None else None,
+        headers=headers, method=method)
+    try:
+        with urllib.request.urlopen(req, timeout=TIMEOUT) as resp:
+            return resp.status, json.loads(resp.read().decode("utf-8", errors="replace"))
+    except urllib.error.HTTPError as e:
+        body = e.read().decode("utf-8", errors="replace")
+        try:
+            return e.code, json.loads(body)
+        except json.JSONDecodeError:
+            return e.code, {"code": e.code, "msg": f"HTTP {e.code}: {body[:200]}"}
+    except Exception as e:
+        return -1, {"code": -1, "msg": str(e)}
+
+
+def _b64d(v):
+    """青龙 API 返回的环境变量值是 base64 编码的, 兼容明文。"""
+    try:
+        return base64.b64decode(str(v)).decode("utf-8")
+    except Exception:
+        return str(v or "")
+
+
+def _parse_accounts(raw):
+    """解析 WB_ACCOUNTS JSON -> [{machine, device, account, token, uid, updated_at}]。"""
+    try:
+        data = json.loads(raw)
+    except (json.JSONDecodeError, TypeError) as e:
+        raise ValueError(f"WB_ACCOUNTS 不是合法 JSON: {e}")
+    if not isinstance(data, list):
+        raise ValueError("WB_ACCOUNTS 应为 JSON 数组")
+    return [a for a in data if isinstance(a, dict) and str(a.get("token", "")).strip()]
+
+
+def push_server():
+    """本机登录态 -> 青龙面板 WB_ACCOUNTS(按 machine 幂等合并)。"""
+    base, cid, csec = _ql_conf()
+    if not (base and cid and csec):
+        log("✗ 青龙面板未配置。请在 config.json 或环境变量里设置:")
+        log("  ql_url=面板地址  ql_client_id / ql_client_secret=应用凭证(权限勾'环境变量')")
+        sys.exit(1)
+
+    creds = load_credentials()
+    if not creds:
+        log("✗ 无法取得本机登录态(见 run 命令的提示)")
+        sys.exit(1)
+    token, uid, source, account, note, device, _ip = creds
+    entry = {
+        "machine": machine_id(),
+        "device": device,
+        "account": account,
+        "token": token,
+        "uid": uid,
+        "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+    }
+
+    st, body = _ql_req(base, "/open/auth/token", payload={"client_id": cid, "client_secret": csec}, method="POST")
+    if body.get("code") != 200 or not (body.get("data") or {}).get("token"):
+        log(f"✗ 青龙登录失败: {json.dumps(body, ensure_ascii=False)[:160]}")
+        sys.exit(1)
+    tk = body["data"]["token"]
+
+    st, body = _ql_req(base, f"/open/envs?searchValue={QL_ENV_NAME}", token=tk)
+    if body.get("code") != 200:
+        log(f"✗ 读取环境变量失败: {json.dumps(body, ensure_ascii=False)[:160]}")
+        sys.exit(1)
+    env_obj, accounts = None, []
+    for e in body.get("data") or []:
+        if e.get("name") == QL_ENV_NAME:
+            env_obj = e
+            try:
+                accounts = _parse_accounts(_b64d(e.get("value")))
+            except ValueError as err:
+                log(f"⚠ 面板已有 {QL_ENV_NAME} 但格式异常, 将覆盖重建: {err}")
+                accounts = []
+            break
+
+    merged = [a for a in accounts if a.get("machine") != entry["machine"]] + [entry]
+    val = json.dumps(merged, ensure_ascii=False)
+    remark = f"WorkBuddy签到多账号(自动维护, 共{len(merged)}台)"
+    if env_obj:
+        st, body = _ql_req(base, "/open/envs", token=tk, method="PUT",
+                           payload=[{"id": env_obj.get("id"), "name": QL_ENV_NAME,
+                                     "value": val, "remarks": remark}])
+    else:
+        st, body = _ql_req(base, "/open/envs", token=tk, method="POST",
+                           payload=[{"name": QL_ENV_NAME, "value": val, "remarks": remark}])
+    if body.get("code") != 200:
+        log(f"✗ 写入环境变量失败: {json.dumps(body, ensure_ascii=False)[:160]}")
+        sys.exit(1)
+
+    log(f"✓ 已推送到青龙面板: 机器 {entry['machine']} ({device} | {account})")
+    log(f"  面板 {QL_ENV_NAME} 现有 {len(merged)} 台机器的凭证, token 有效期约55天, 建议每日顺带推送")
+    return entry
+
+
 # ---------- 企微推送 ----------
 
 def resolve_webhook():
@@ -483,15 +655,8 @@ def push_wecom(lines, account, device, ip, note=""):
 
 # ---------- 主流程 ----------
 
-def run_all():
-    creds = load_credentials()
-    if not creds:
-        log("✗ 无法取得登录态。请确认 WorkBuddy 客户端正在运行且已登录,")
-        log("  或设置环境变量 WORKBUDDY_ACCESS_TOKEN (明文 JWT) 后重试。")
-        sys.exit(1)
-    token, uid, source, account, note, device, ip = creds
-    log(f"凭证来源: {source} | 账号: {account} | 设备: {device} ({ip}) | uid: {uid[:8]}...")
-
+def process_account(token, uid, account, note, device, ip):
+    """单账号完整流程: 状态 -> 幂等签到 -> 积分 -> 本周 -> 旅行。返回推送行列表。"""
     lines = [f"⏰ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"]
 
     # 1. 查状态
@@ -552,6 +717,50 @@ def run_all():
         lines.append(f"{'🎁' if claimed else '🐱'} 派猫旅行: {cat_name} {travel_msg}")
         log(lines[-1])
 
+    return lines
+
+
+def run_all():
+    raw = os.environ.get(QL_ENV_NAME, "").strip()
+
+    # 多账号模式(青龙面板: WB_ACCOUNTS JSON 数组, 每台机器一组凭证)
+    if raw:
+        try:
+            accounts = _parse_accounts(raw)
+        except ValueError as e:
+            log(f"✗ {e}")
+            sys.exit(1)
+        if not accounts:
+            log("✗ WB_ACCOUNTS 里没有可用的凭证(token 字段为空)")
+            sys.exit(1)
+        ip = get_device_ip()
+        log(f"多账号模式: 共 {len(accounts)} 台机器")
+        for a in accounts:
+            machine = str(a.get("machine", "?"))
+            device = str(a.get("device") or f"机器{machine}")
+            account = str(a.get("account") or device)
+            note = str(a.get("note") or "")
+            log(f"—— {device} ({machine}) | {account} ——")
+            try:
+                lines = process_account(a["token"], str(a.get("uid") or ""),
+                                        account, note, device, ip)
+            except Exception as e:
+                lines = [f"⏰ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+                         f"❌ 执行异常: {str(e)[:120]}"]
+                log(lines[-1])
+            push_wecom(lines, account, device, ip, note)
+        return
+
+    # 单账号模式(本机客户端自动解密)
+    creds = load_credentials()
+    if not creds:
+        log("✗ 无法取得登录态。请确认 WorkBuddy 客户端正在运行且已登录,")
+        log("  或设置环境变量 WORKBUDDY_ACCESS_TOKEN (明文 JWT) 后重试。")
+        sys.exit(1)
+    token, uid, source, account, note, device, ip = creds
+    log(f"凭证来源: {source} | 账号: {account} | 设备: {device} ({ip}) | uid: {uid[:8]}...")
+
+    lines = process_account(token, uid, account, note, device, ip)
     push_wecom(lines, account, device, ip, note)
 
 
@@ -560,6 +769,10 @@ def main():
 
     if arg == "run":
         run_all()
+        return
+
+    if arg == "push_server":
+        push_server()
         return
 
     creds = load_credentials()
@@ -635,7 +848,7 @@ def main():
             sys.exit(0 if claimed or "尚未到达" in msg or "已领取" in msg else 1)
     else:
         print(f"未知命令: {arg}")
-        print("用法: python workbuddy_checkin.py [run|status|checkin|point|cat_status|cat_claim]")
+        print("用法: python workbuddy_checkin.py [run|status|checkin|point|cat_status|cat_claim|push_server]")
         sys.exit(2)
 
 

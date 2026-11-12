@@ -254,6 +254,48 @@ crontab -e
 - 服务器上无法自动续期（解密依赖本机客户端），这是唯一的维护成本
 - 签到/积分/旅行接口实测对来源 IP 无限制，公网 VPS 可正常调用
 
+### 7.2 青龙面板部署（多客户端，方案一）
+
+推荐形态：**多台 WorkBuddy 客户端的凭证收敛到青龙面板的 1 个环境变量**，每台机器各跑一次推送，按 MAC 幂等合并，互不覆盖。
+
+**面板侧（一次性，约 5 分钟）**
+
+1. 系统设置 → 应用设置 → 新建应用，权限**只勾「环境变量」**，得到 Client ID / Client Secret
+2. 订阅管理 → 新建订阅：仓库 `GitKWorker/workbuddy-auto-checkin`（脚本更新自动同步）
+3. 定时任务 → 新建：命令 `task workbuddy_checkin.py run`，cron `5 9 * * *`
+
+环境变量 `WB_ACCOUNTS` **无需手动建**——本机首次推送时自动创建，格式：
+
+```json
+[
+  {"machine": "EC63D7AFE1DC", "device": "台式机-书房", "account": "兰心",
+   "token": "eyJ...", "uid": "6acf...", "updated_at": "2026-11-12 15:00"}
+]
+```
+
+**本机侧（每台客户端各一次）**
+
+`config.json` 填面板连接信息（已 gitignore，不进仓库）：
+
+```json
+{
+  "ql_url": "http://面板地址:5700",
+  "ql_client_id": "应用ClientID",
+  "ql_client_secret": "应用ClientSecret"
+}
+```
+
+然后推送登录态：
+
+```powershell
+python scripts\workbuddy_checkin.py push_server
+```
+
+- 按 `machine`（物理网卡 MAC，可用 `WB_MACHINE_ID` 覆盖）幂等合并：已有则更新、没有则追加
+- 建议：本机每日签到任务顺带执行 `push_server`，token（约 55 天有效期）永远新鲜
+- 面板侧 `run` 检测到 `WB_ACCOUNTS` 自动进入**多账号模式**：逐台签到/领奖，各自推送企微（设备名区分）
+- ⚠️ 面板即敏感资产：强密码、勿裸暴露公网；Client Secret 只存本机与面板两处
+
 ---
 
 ## 8. 常见问题

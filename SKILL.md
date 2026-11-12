@@ -69,8 +69,11 @@ cd "%USERPROFILE%\.workbuddy\skills\workbuddy-auto-checkin\scripts" && python wo
 | 检查签到状态 | `python workbuddy_checkin.py status` | 仅查询签到状态/连签/本周进度 |
 | 签到 | `python workbuddy_checkin.py checkin` | 未签则签，已签幂等跳过 |
 | 查询积分 | `python workbuddy_checkin.py point` | 剩余积分总额 + 额度分项 + 今日/连签 |
-| 查询猫猫档案 | `python workbuddy_checkin.py cat_status` | 猫猫昵称/稀有度/性格 + 轮询间隔 |
+| 查询猫猫档案 | `python workbuddy_checkin.py cat_status` | 猫猫昵称/稀有度/性格 + 旅行目的地/ETA/奖励 |
 | 领取旅行奖励 | `python workbuddy_checkin.py cat_claim` | 到达则领奖，未到达明确提示不算失败 |
+| 推送到青龙面板 | `python workbuddy_checkin.py push_server` | 本机登录态 -> 面板 `WB_ACCOUNTS`（按 MAC 幂等合并） |
+
+青龙多账号：面板环境变量 `WB_ACCOUNTS`（JSON 数组）存在时，`run` 自动逐台执行并分别推送企微。面板应用凭证（`ql_url`/`ql_client_id`/`ql_client_secret`）配置在本机 `config.json`，应用权限只勾「环境变量」。
 
 完整实现说明、配置项、常见问题见同目录 `README.md`。
 
