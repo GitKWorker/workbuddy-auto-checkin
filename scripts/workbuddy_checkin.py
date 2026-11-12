@@ -716,9 +716,9 @@ def process_account(token, uid, account, note, device, ip):
         lines.append(f"📋 状态查询失败: {json.dumps(data, ensure_ascii=False)[:80]}")
         log(lines[-1])
 
-    # 2. 幂等签到
+    # 2. 幂等签到(已签到时推送里不单列, 状态行已说明; 实际签到或失败才单列)
     if ok and data.get("today_checked_in"):
-        lines.append("✅ 签到: 今日已签到(跳过)")
+        log("签到: 今日已签到(跳过)")
     else:
         ok2, detail, _ = do_checkin(token, uid)
         lines.append(("✅ " if ok2 else "❌ ") + f"签到: {detail}")
