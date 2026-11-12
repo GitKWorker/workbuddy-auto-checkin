@@ -81,6 +81,18 @@ python workbuddy_checkin.py point     # 只看剩余积分
 
 明文 token 只在子进程内存里存在，**不写任何临时文件**，进程退出即消失。
 
+### 3.2 wb_auth_helper.js 是什么
+
+上面第 1~5 步的解密逻辑就在 `scripts/wb_auth_helper.js` 里——它是**本机凭证解析的辅助脚本**，由 `workbuddy_checkin.py` 自动调用（无需手动运行），负责「借客户端运行时取密钥并解密登录态」这一步。
+
+需要它存在的原因：解密密钥只存在于客户端内存，纯 Python 拿不到，必须借 `WorkBuddy.exe` 自带的 Node 运行时执行客户端原生绑定，所以需要一个 JS 桥接文件。
+
+安全性说明：
+
+- 文件里**只有解密逻辑，不含任何凭证**（你的 token / webhook 都在 gitignored 的 config.json 或环境变量里）
+- 解密结果只输出到子进程 stdout，不落盘
+- 它**只在装了 WorkBuddy 客户端的本机上会被调用**；青龙面板 / 纯 token 服务器模式下脚本走 `WB_ACCOUNTS` 环境变量的明文 token，这个文件完全不会被使用（订阅拉下来看到它属正常，放着不管即可）
+
 请求头：
 
 ```
@@ -89,7 +101,7 @@ X-User-Id: <uid>
 User-Agent: WorkBuddy-Checkin-Bot/1.0     # 积分接口缺 UA 会被网关 403
 ```
 
-### 3.2 接口
+### 3.3 接口
 
 签到（`POST https://www.codebuddy.cn/v2/billing/meter/…`）：
 
@@ -148,6 +160,7 @@ workbuddy-auto-checkin/
 └── scripts/
     ├── workbuddy_checkin.py  主脚本：凭证解析 + 接口调用 + 推送
     └── wb_auth_helper.js     解密辅助：借客户端运行时取密钥并解密登录态
+                              (仅本机使用, 不含凭证; 服务器/青龙模式用不到, 详见 3.2 节)
 ```
 
 ---
