@@ -72,8 +72,11 @@ cd "%USERPROFILE%\.workbuddy\skills\workbuddy-auto-checkin\scripts" && python wo
 | 查询猫猫档案 | `python workbuddy_checkin.py cat_status` | 猫猫昵称/稀有度/性格 + 旅行目的地/ETA/奖励 |
 | 领取旅行奖励 | `python workbuddy_checkin.py cat_claim` | 到达则领奖，未到达明确提示不算失败 |
 | 推送到青龙面板 | `python workbuddy_checkin.py push_server` | 本机登录态 -> 面板 `WB_ACCOUNTS`（按 MAC 幂等合并） |
+| 查看任务开关 | `python workbuddy_checkin.py tasks` | 列出各活动是否启用及配置来源（config.json `tasks` / 环境变量 `WB_TASKS`） |
 
 青龙多账号：面板环境变量 `WB_ACCOUNTS`（JSON 数组）存在时，`run` 自动逐台执行并分别推送企微。面板应用凭证（`ql_url`/`ql_client_id`/`ql_client_secret`）配置在本机 `config.json`，应用权限只勾「环境变量」。
+
+任务开关：`config.json` 的 `tasks`（或青龙环境变量 `WB_TASKS`）控制哪些活动自动执行，如 `{"checkin": true, "cat_travel": false}`。**全局一份，对所有账号/机器生效**；未写的任务按启用处理。用户说「不要跑某个活动」时改这里，不要改代码。
 
 完整实现说明、配置项、常见问题见同目录 `README.md`。
 

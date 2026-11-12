@@ -13,5 +13,10 @@
   "access_token": "",
   "user_id": "",
   "_account_name": "仅在手动填 access_token 时用于显示账号名；自动解密时会取客户端昵称",
-  "account_name": ""
+  "account_name": "",
+  "_tasks": "任务开关：true=执行，false=跳过。未写的任务按默认(启用)处理，对所有账号/机器生效。青龙面板上用环境变量 WB_TASKS（JSON）覆盖，如 {\"cat_travel\":false}",
+  "tasks": {
+    "checkin": true,
+    "cat_travel": true
+  }
 }

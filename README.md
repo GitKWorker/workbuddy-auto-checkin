@@ -201,10 +201,56 @@ workbuddy-auto-checkin/
 | `access_token` | `WORKBUDDY_ACCESS_TOKEN` | 空 | 仅客户端未运行时临时用，正常留空 |
 | `user_id` | `WORKBUDDY_USER_ID` | 空 | 配合上面一条使用 |
 | `account_name` | `WB_ACCOUNT_NAME` | 空 | 手动填 token 时显示用 |
+| `tasks` | `WB_TASKS` | 全部启用 | 任务开关（见下节），对**所有账号/机器**统一生效 |
 
 webhook key 获取：企业微信群 → 右上角「…」→ 群机器人 → 添加机器人 → 复制 Webhook 地址，取 `key=` 后面那段（贴整条 URL 不行）。
 
 > 环境变量用 `setx` 设置后，**已在运行的 WorkBuddy 进程读不到**，需要重启客户端；改 `config.json` 则立即生效。
+
+### 6.1 任务开关（哪些活动要自动执行）
+
+`config.json` 里的 `tasks` 是**全局一份**，对所有账号和机器生效；青龙面板上没有 config.json，用环境变量 `WB_TASKS`（JSON）覆盖，优先级最高：
+
+```json
+"tasks": {
+  "checkin": true,
+  "cat_travel": false
+}
+```
+
+```bash
+# 青龙面板环境变量（等价写法）
+WB_TASKS='{"cat_travel":false}'
+```
+
+| 任务名 | 默认 | 说明 |
+|---|---|---|
+| `checkin` | ✅ 启用 | 查状态 + 幂等签到，拿每日积分 |
+| `cat_travel` | ✅ 启用 | 行程中报 ETA，到达后自动领奖 |
+| _未登记的新任务_ | ✅ 启用 | 配置里没写的任务按启用处理，方便灰度上线 |
+
+规则与细节：
+
+- **只写要改的**：未出现的任务走默认值（启用），不必列全
+- **也接受带参数的写法**：`{"cat_travel": {"enabled": false}}`，为将来需要参数的任务（如指定阈值）留了口子
+- **禁用后推送里不出现该行**，只在日志里留一句「⏭ 跳过 …」，保持消息干净
+- **单任务异常不影响其他任务**：某个活动接口挂了只在推送里标 `⚠️ 异常`，签到照常
+- 查看当前生效状态：`python workbuddy_checkin.py tasks`
+
+```
+$ python workbuddy_checkin.py tasks
+任务开关(来源: config:config.json)
+  checkin      每日签到     ✅ 启用   查状态并幂等签到, 拿每日积分
+  cat_travel   派猫旅行     ⏸ 禁用  (已覆盖默认)   行程中报 ETA, 到达后自动领奖
+```
+
+### 6.2 新增一个活动（开发者）
+
+1. 写一个任务函数，签名 `f(token, uid) -> list[str]`，返回要进推送的文本行（内部自行处理幂等与失败提示）
+2. 在 `TASK_REGISTRY` 里加一行：`("新任务名", "显示名", True, "一句话说明")`
+3. 在 `process_account` 里用 `if task_enabled("新任务名"):` 包住调用，异常用 `try/except` 兜住
+
+这样配置、`tasks` 命令、文档三处自动对齐，无需改其他地方。
 
 ---
 

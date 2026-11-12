@@ -433,7 +433,7 @@ def claim_travel(token, uid):
 
 def _load_config():
     """技能目录下的 config.json(与 SKILL.md 同级), 可选。
-    支持字段: qw_webhook / access_token / account_note / user_id
+    支持字段: qw_webhook / access_token / account_note / user_id / tasks(任务开关)
     """
     if not CONFIG_FILE.exists():
         return {}
@@ -441,6 +441,61 @@ def _load_config():
         return json.loads(CONFIG_FILE.read_text(encoding="utf-8")) or {}
     except Exception:
         return {}
+
+
+# ---------- 任务开关(全局一份, 对所有账号/机器生效) ----------
+
+# 注册表: 名称 -> (显示名, 默认是否执行, 说明)
+# 新增活动时: 在这里加一行 + 在 process_account 里用 task_enabled("<名称>") 包住执行块
+TASK_REGISTRY = [
+    ("checkin",    "每日签到",   True, "查状态并幂等签到, 拿每日积分"),
+    ("cat_travel", "派猫旅行",   True, "行程中报 ETA, 到达后自动领奖"),
+]
+
+
+def task_config():
+    """生效的任务开关: 默认值 <- config.json 的 tasks <- 环境变量 WB_TASKS(最高优先)。
+
+    WB_TASKS 用于青龙面板(仓库里没有 config.json), 形如 {"checkin":true,"cat_travel":false};
+    也接受 {"cat_travel":{"enabled":false}} 这种带参数的写法(取 enabled)。
+    未在配置里出现的任务一律按默认值(启用)处理。
+    """
+    cfg = {name: default for name, _label, default, _desc in TASK_REGISTRY}
+    raw = os.environ.get("WB_TASKS", "").strip()
+    if raw:
+        try:
+            src = json.loads(raw)
+        except json.JSONDecodeError as e:
+            log(f"⚠ WB_TASKS 不是合法 JSON, 已忽略: {e}")
+            src = {}
+    else:
+        src = _load_config().get("tasks") or {}
+    if isinstance(src, dict):
+        for k, v in src.items():
+            if isinstance(v, dict):
+                v = v.get("enabled", True)
+            if isinstance(v, bool):
+                cfg[str(k)] = v
+    return cfg
+
+
+def task_enabled(name):
+    """任务是否执行; 未注册/未配置的名称按启用处理(方便灰度加新任务)。"""
+    return task_config().get(name, True)
+
+
+def print_tasks():
+    """列出所有任务及当前开关状态, 方便核对配置。"""
+    on = task_config()
+    src = "env:WB_TASKS" if os.environ.get("WB_TASKS", "").strip() else \
+        (f"config:{CONFIG_FILE.name}" if (_load_config().get("tasks")) else "默认值")
+    print(f"任务开关(来源: {src})")
+    for name, label, default, desc in TASK_REGISTRY:
+        state = "✅ 启用" if on.get(name, default) else "⏸ 禁用"
+        extra = "" if on.get(name, default) == default else "  (已覆盖默认)"
+        print(f"  {name:<12} {label:<8} {state}{extra}   {desc}")
+    print("\n修改方式: config.json 里加 \"tasks\": {\"cat_travel\": false},")
+    print("          或青龙环境变量 WB_TASKS='{\"cat_travel\":false}'")
 
 
 # ---------- 青龙面板推送(方案一: 单一 WB_ACCOUNTS JSON 环境变量) ----------
@@ -717,12 +772,18 @@ def process_account(token, uid, account, note, device, ip):
         log(lines[-1])
 
     # 2. 幂等签到(已签到时推送里不单列, 状态行已说明; 实际签到或失败才单列)
-    if ok and data.get("today_checked_in"):
+    if not task_enabled("checkin"):
+        log("⏭ 跳过签到(tasks.checkin=false)")
+    elif ok and data.get("today_checked_in"):
         log("签到: 今日已签到(跳过)")
     else:
-        ok2, detail, _ = do_checkin(token, uid)
-        lines.append(("✅ " if ok2 else "❌ ") + f"签到: {detail}")
-        log(lines[-1])
+        try:
+            ok2, detail, _ = do_checkin(token, uid)
+            lines.append(("✅ " if ok2 else "❌ ") + f"签到: {detail}")
+            log(lines[-1])
+        except Exception as e:
+            lines.append(f"❌ 签到异常: {e}")
+            log(lines[-1])
 
     # 3. 剩余积分(签到后查, 数值已含本次奖励)
     info, raw = get_balance(token, uid)
@@ -742,25 +803,32 @@ def process_account(token, uid, account, note, device, ip):
         log(lines[-1])
 
     # 5. 派猫旅行: 行程中报 ETA, 已到达则领奖, 均不影响推送
-    buddy = get_buddy_info(token, uid)
-    cat_name = buddy["name"] if buddy else "猫猫"
-    trip = get_travel_status(token, uid)
-    if trip and trip.get("state") == "traveling":
-        remain = trip.get("arrive_at") and trip.get("server_now") \
-            and max(0, int(trip["arrive_at"]) - int(trip["server_now"]))
-        loc = ((trip.get("location") or {}).get("name")) or "未知目的地"
-        reward = trip.get("reward_credit")
-        eta = fmt_eta(remain)
-        arrive_at = trip.get("arrive_at")
-        arrive_str = datetime.fromtimestamp(int(arrive_at)).strftime("%H:%M") if arrive_at else "?"
-        lines.append(f"🐱 派猫旅行: {cat_name} 在「{loc}」旅行中, "
-                     f"预计 {eta} 后({arrive_str})到达"
-                     + (f", 奖励 {fmt_credit(reward)} 积分" if reward else ""))
-        log(lines[-1])
+    if not task_enabled("cat_travel"):
+        log("⏭ 跳过派猫旅行(tasks.cat_travel=false)")
     else:
-        claimed, travel_msg = claim_travel(token, uid)
-        lines.append(f"{'🎁' if claimed else '🐱'} 派猫旅行: {cat_name} {travel_msg}")
-        log(lines[-1])
+        try:
+            buddy = get_buddy_info(token, uid)
+            cat_name = buddy["name"] if buddy else "猫猫"
+            trip = get_travel_status(token, uid)
+            if trip and trip.get("state") == "traveling":
+                remain = trip.get("arrive_at") and trip.get("server_now") \
+                    and max(0, int(trip["arrive_at"]) - int(trip["server_now"]))
+                loc = ((trip.get("location") or {}).get("name")) or "未知目的地"
+                reward = trip.get("reward_credit")
+                eta = fmt_eta(remain)
+                arrive_at = trip.get("arrive_at")
+                arrive_str = datetime.fromtimestamp(int(arrive_at)).strftime("%H:%M") if arrive_at else "?"
+                lines.append(f"🐱 派猫旅行: {cat_name} 在「{loc}」旅行中, "
+                             f"预计 {eta} 后({arrive_str})到达"
+                             + (f", 奖励 {fmt_credit(reward)} 积分" if reward else ""))
+                log(lines[-1])
+            else:
+                claimed, travel_msg = claim_travel(token, uid)
+                lines.append(f"{'🎁' if claimed else '🐱'} 派猫旅行: {cat_name} {travel_msg}")
+                log(lines[-1])
+        except Exception as e:
+            lines.append(f"⚠️ 派猫旅行异常: {e}")
+            log(lines[-1])
 
     return lines
 
@@ -818,6 +886,10 @@ def main():
 
     if arg == "push_server":
         push_server()
+        return
+
+    if arg in ("tasks", "task_list"):
+        print_tasks()
         return
 
     creds = load_credentials()
@@ -893,7 +965,8 @@ def main():
             sys.exit(0 if claimed or "尚未到达" in msg or "已领取" in msg else 1)
     else:
         print(f"未知命令: {arg}")
-        print("用法: python workbuddy_checkin.py [run|status|checkin|point|cat_status|cat_claim|push_server]")
+        print("用法: python workbuddy_checkin.py "
+              "[run|status|checkin|point|cat_status|cat_claim|push_server|tasks]")
         sys.exit(2)
 
 
