@@ -454,21 +454,14 @@ TASK_REGISTRY = [
 
 
 def task_config():
-    """生效的任务开关: 默认值 <- config.json 的 tasks <- 环境变量 WB_TASKS(最高优先)。
+    """生效的任务开关: 默认值 <- config.json 的 tasks <- 面板/环境变量(最高优先)。
 
-    WB_TASKS 用于青龙面板(仓库里没有 config.json), 形如 {"checkin":true,"cat_travel":false};
-    也接受 {"cat_travel":{"enabled":false}} 这种带参数的写法(取 enabled)。
+    面板统一配置 WORKBUDDY_CONFIG 里的 tasks 覆盖 config.json; 也兼容旧的 WB_TASKS。
     未在配置里出现的任务一律按默认值(启用)处理。
     """
     cfg = {name: default for name, _label, default, _desc in TASK_REGISTRY}
-    raw = os.environ.get("WB_TASKS", "").strip()
-    if raw:
-        try:
-            src = json.loads(raw)
-        except json.JSONDecodeError as e:
-            log(f"⚠ WB_TASKS 不是合法 JSON, 已忽略: {e}")
-            src = {}
-    else:
+    src = panel_config().get("tasks")
+    if src is None:
         src = _load_config().get("tasks") or {}
     if isinstance(src, dict):
         for k, v in src.items():
@@ -487,20 +480,27 @@ def task_enabled(name):
 def print_tasks():
     """列出所有任务及当前开关状态, 方便核对配置。"""
     on = task_config()
-    src = "env:WB_TASKS" if os.environ.get("WB_TASKS", "").strip() else \
-        (f"config:{CONFIG_FILE.name}" if (_load_config().get("tasks")) else "默认值")
+    pc = panel_config()
+    if pc.get("tasks") is not None:
+        src = pc.get("source") or "环境变量"
+    elif _load_config().get("tasks"):
+        src = f"config:{CONFIG_FILE.name}"
+    else:
+        src = "默认值"
     print(f"任务开关(来源: {src})")
     for name, label, default, desc in TASK_REGISTRY:
         state = "✅ 启用" if on.get(name, default) else "⏸ 禁用"
         extra = "" if on.get(name, default) == default else "  (已覆盖默认)"
         print(f"  {name:<12} {label:<8} {state}{extra}   {desc}")
     print("\n修改方式: config.json 里加 \"tasks\": {\"cat_travel\": false},")
-    print("          或青龙环境变量 WB_TASKS='{\"cat_travel\":false}'")
+    print(f"          或面板环境变量 {CONF_ENV_NAME} 的 tasks 字段, 如"
+          ' {"tasks":{"cat_travel":false}}')
 
 
 # ---------- 青龙面板推送(方案一: 单一 WB_ACCOUNTS JSON 环境变量) ----------
 
-QL_ENV_NAME = "WB_ACCOUNTS"
+QL_ENV_NAME = "WB_ACCOUNTS"          # 旧: 多账号凭证单独一个变量(仅兼容读取)
+CONF_ENV_NAME = "WORKBUDDY_CONFIG"   # 新: 统一配置(accounts + qw_webhook + tasks)
 
 
 def _ql_conf():
@@ -640,6 +640,47 @@ def _parse_accounts(raw):
     return [a for a in data if isinstance(a, dict) and str(a.get("token", "")).strip()]
 
 
+def panel_config():
+    """统一配置: WORKBUDDY_CONFIG(JSON) 优先, 兼容旧的 WB_ACCOUNTS / QW_WEBHOOK / WB_TASKS。
+
+    结构: {"accounts": [...], "qw_webhook": "...", "tasks": {"checkin": true, ...}}
+    返回 {"accounts": list, "qw_webhook": str, "tasks": dict|None, "source": str}
+    """
+    out = {"accounts": [], "qw_webhook": "", "tasks": None, "source": ""}
+    raw = os.environ.get(CONF_ENV_NAME, "").strip()
+    if raw:
+        try:
+            d = json.loads(raw)
+            if isinstance(d, dict):
+                out["accounts"] = [a for a in (d.get("accounts") or [])
+                                   if isinstance(a, dict) and str(a.get("token", "")).strip()]
+                out["qw_webhook"] = str(d.get("qw_webhook") or "").strip()
+                out["tasks"] = d.get("tasks") if isinstance(d.get("tasks"), dict) else None
+                out["source"] = f"env:{CONF_ENV_NAME}"
+                return out
+            log(f"⚠ {CONF_ENV_NAME} 应为 JSON 对象, 已回退旧变量")
+        except json.JSONDecodeError as e:
+            log(f"⚠ {CONF_ENV_NAME} 不是合法 JSON, 已回退旧变量: {e}")
+
+    # 兼容: 旧的多变量方案
+    acc_raw = os.environ.get(QL_ENV_NAME, "").strip()
+    if acc_raw:
+        try:
+            out["accounts"] = _parse_accounts(acc_raw)
+            out["source"] = f"env:{QL_ENV_NAME}(旧)"
+        except ValueError as e:
+            log(f"⚠ {e}")
+    t = os.environ.get("WB_TASKS", "").strip()
+    if t:
+        try:
+            parsed = json.loads(t)
+            if isinstance(parsed, dict):
+                out["tasks"] = parsed
+        except json.JSONDecodeError:
+            log("⚠ WB_TASKS 不是合法 JSON, 已忽略")
+    return out
+
+
 def push_server():
     """本机登录态 -> 青龙面板 WB_ACCOUNTS(按 machine 幂等合并)。"""
     base, cid, csec = _ql_conf()
@@ -668,53 +709,112 @@ def push_server():
         log(f"✗ {e}")
         sys.exit(1)
 
-    st, body = _ql_req(base, f"/open/envs?searchValue={QL_ENV_NAME}", token=tk)
+    st, body = _ql_req(base, "/open/envs", token=tk)
     if body.get("code") != 200:
         log(f"✗ 读取环境变量失败: {json.dumps(body, ensure_ascii=False)[:160]}")
         sys.exit(1)
-    env_obj, accounts = None, []
-    for e in body.get("data") or []:
-        if e.get("name") == QL_ENV_NAME:
-            env_obj = e
-            try:
-                accounts = _parse_accounts(_b64d(e.get("value")))
-            except ValueError as err:
-                log(f"⚠ 面板已有 {QL_ENV_NAME} 但格式异常, 将覆盖重建: {err}")
-                accounts = []
-            break
+    envs = body.get("data") or []
+    by_name = {e.get("name"): e for e in envs}
 
+    # 1. 取现有统一配置; 没有则从旧变量(WB_ACCOUNTS/QW_WEBHOOK/WB_TASKS)迁移
+    conf_env = by_name.get(CONF_ENV_NAME)
+    cfg, accounts = {}, []
+    if conf_env:
+        try:
+            parsed = json.loads(_b64d(conf_env.get("value")))
+            cfg = parsed if isinstance(parsed, dict) else {}
+            accounts = [a for a in (cfg.get("accounts") or []) if isinstance(a, dict)]
+        except json.JSONDecodeError as err:
+            log(f"⚠ 面板 {CONF_ENV_NAME} 格式异常, 将按旧变量重建: {err}")
+            cfg = {}
+
+    legacy_names = [QL_ENV_NAME, "QW_WEBHOOK", "WB_TASKS"]
+    migrated = []
+    if not conf_env:
+        acc_env = by_name.get(QL_ENV_NAME)
+        if acc_env:
+            try:
+                accounts = _parse_accounts(_b64d(acc_env.get("value")))
+                migrated.append(QL_ENV_NAME)
+            except ValueError as err:
+                log(f"⚠ 旧变量 {QL_ENV_NAME} 格式异常, 忽略: {err}")
+        hook_env = by_name.get("QW_WEBHOOK")
+        if hook_env:
+            cfg["qw_webhook"] = _b64d(hook_env.get("value")).strip()
+            migrated.append("QW_WEBHOOK")
+        tasks_env = by_name.get("WB_TASKS")
+        if tasks_env:
+            try:
+                parsed_tasks = json.loads(_b64d(tasks_env.get("value")))
+                if isinstance(parsed_tasks, dict):
+                    cfg["tasks"] = parsed_tasks
+                    migrated.append("WB_TASKS")
+            except json.JSONDecodeError:
+                log("⚠ 旧变量 WB_TASKS 不是合法 JSON, 忽略")
+
+    # 2. webhook / tasks 兜底: 本机 config.json 的值做种子(不覆盖面板已有)
+    if not cfg.get("qw_webhook"):
+        cfg["qw_webhook"] = str(_load_config().get("qw_webhook", "")).strip()
+    if not cfg.get("tasks"):
+        cfg["tasks"] = _load_config().get("tasks") or {}
+
+    # 3. 按 machine 幂等合并本机条目
     merged = [a for a in accounts if a.get("machine") != entry["machine"]] + [entry]
-    val = json.dumps(merged, ensure_ascii=False)
-    remark = f"WorkBuddy签到多账号(自动维护, 共{len(merged)}台)"
-    if env_obj:
+    cfg["accounts"] = merged
+    cfg.setdefault("tasks", {})
+    val = json.dumps(cfg, ensure_ascii=False)
+    n_task = len([k for k, v in (cfg.get("tasks") or {}).items() if v is True]) \
+        if isinstance(cfg.get("tasks"), dict) else 0
+    remark = (f"WorkBuddy统一配置(自动维护: {len(merged)}台机器"
+              + (f", {n_task}项任务开关" if n_task else "")
+              + (", 含企微webhook" if cfg.get("qw_webhook") else "") + ")")
+
+    if conf_env:
         # 实测 2.18.3: 创建用数组, 更新用单对象(值均为明文字符串)
         st, body = _ql_req(base, "/open/envs", token=tk, method="PUT",
-                           payload={"id": env_obj.get("id"), "name": QL_ENV_NAME,
+                           payload={"id": conf_env.get("id"), "name": CONF_ENV_NAME,
                                     "value": val, "remarks": remark})
     else:
         st, body = _ql_req(base, "/open/envs", token=tk, method="POST",
-                           payload=[{"name": QL_ENV_NAME, "value": val, "remarks": remark}])
+                           payload=[{"name": CONF_ENV_NAME, "value": val, "remarks": remark}])
     if body.get("code") != 200:
         log(f"✗ 写入环境变量失败: {json.dumps(body, ensure_ascii=False)[:160]}")
         sys.exit(1)
 
-    if env_obj:
-        _ql_req(base, "/open/envs/enable", token=tk, method="PUT", payload=[env_obj.get("id")])
+    # 4. 启用新变量(青龙 2.18 新建默认未启用)
+    st, body = _ql_req(base, f"/open/envs?searchValue={CONF_ENV_NAME}", token=tk)
+    new_env = next((e for e in (body.get("data") or [])
+                    if e.get("name") == CONF_ENV_NAME), None)
+    if new_env:
+        _ql_req(base, "/open/envs/enable", token=tk, method="PUT", payload=[new_env.get("id")])
+
+    # 5. 清理被合并的旧变量(避免面板里重复/互相干扰)
+    stale_ids = [by_name[n].get("id") for n in legacy_names if n in by_name]
+    if stale_ids:
+        st, body = _ql_req(base, "/open/envs", token=tk, method="DELETE", payload=stale_ids)
+        if body.get("code") == 200:
+            log(f"  已迁移并清理旧变量: {', '.join(n for n in legacy_names if n in by_name)}")
 
     log(f"✓ 已推送到青龙面板: 机器 {entry['machine']} ({device} | {account})")
     age = token_age_desc(token)
-    log(f"  本次 token: {age or '有效期未知'} (签发日期即新旧标识, 每日顺带推送可保鲜)")
-    log(f"  面板 {QL_ENV_NAME} 现有 {len(merged)} 台机器的凭证")
+    log(f"  本次 token: {age or '有效期未知'}")
+    log(f"  面板 {CONF_ENV_NAME} 现有 {len(merged)} 台机器"
+        + (f", 已包含 webhook" if cfg.get("qw_webhook") else "")
+        + (f", tasks: {json.dumps(cfg.get('tasks'), ensure_ascii=False)}"
+           if cfg.get("tasks") else ""))
     return entry
 
 
 # ---------- 企微推送 ----------
 
 def resolve_webhook():
-    """webhook key 优先级: 环境变量 QW_WEBHOOK > config.json 的 qw_webhook"""
+    """webhook key 优先级: 环境变量 QW_WEBHOOK > 面板 WORKBUDDY_CONFIG > config.json"""
     key = os.environ.get("QW_WEBHOOK", "").strip()
     if key:
         return key, "env:QW_WEBHOOK"
+    pc = panel_config()
+    if pc.get("qw_webhook"):
+        return pc["qw_webhook"], pc.get("source") or "面板配置"
     key = str(_load_config().get("qw_webhook", "")).strip()
     if key:
         return key, f"config:{CONFIG_FILE.name}"
@@ -834,20 +934,13 @@ def process_account(token, uid, account, note, device, ip):
 
 
 def run_all():
-    raw = os.environ.get(QL_ENV_NAME, "").strip()
+    pc = panel_config()
+    accounts = pc["accounts"]
 
-    # 多账号模式(青龙面板: WB_ACCOUNTS JSON 数组, 每台机器一组凭证)
-    if raw:
-        try:
-            accounts = _parse_accounts(raw)
-        except ValueError as e:
-            log(f"✗ {e}")
-            sys.exit(1)
-        if not accounts:
-            log("✗ WB_ACCOUNTS 里没有可用的凭证(token 字段为空)")
-            sys.exit(1)
+    # 多账号模式(面板统一配置 WORKBUDDY_CONFIG 里的 accounts, 每台机器一组凭证)
+    if accounts:
         ip = get_device_ip()
-        log(f"多账号模式: 共 {len(accounts)} 台机器")
+        log(f"多账号模式({pc.get('source') or '环境变量'}): 共 {len(accounts)} 台机器")
         for a in accounts:
             machine = str(a.get("machine", "?"))
             device = str(a.get("device") or f"机器{machine}")

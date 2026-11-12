@@ -91,7 +91,7 @@ python workbuddy_checkin.py point     # 只看剩余积分
 
 - 文件里**只有解密逻辑，不含任何凭证**（你的 token / webhook 都在 gitignored 的 config.json 或环境变量里）
 - 解密结果只输出到子进程 stdout，不落盘
-- 它**只在装了 WorkBuddy 客户端的本机上会被调用**；青龙面板 / 纯 token 服务器模式下脚本走 `WB_ACCOUNTS` 环境变量的明文 token，这个文件完全不会被使用（订阅拉下来看到它属正常，放着不管即可）
+- 它**只在装了 WorkBuddy 客户端的本机上会被调用**；青龙面板 / 纯 token 服务器模式下脚本走 `WORKBUDDY_CONFIG` 里的明文 token，这个文件完全不会被使用（订阅拉下来看到它属正常，放着不管即可）
 
 请求头：
 
@@ -193,7 +193,7 @@ workbuddy-auto-checkin/
 
 | 字段 | 环境变量 | 默认 | 说明 |
 |---|---|---|---|
-| `qw_webhook` | `QW_WEBHOOK` | 空 | 企微群机器人 key，不填则跳过推送 |
+| `qw_webhook` | `QW_WEBHOOK` / 面板 `WORKBUDDY_CONFIG.qw_webhook` | 空 | 企微群机器人 key，不填则跳过推送 |
 | `account_note` | `WB_ACCOUNT_NOTE` | 空 | 备注，多账号区分用 |
 | `device_name` | `WB_DEVICE_NAME` | 系统主机名 | 推送里的设备名 |
 | `device_ip` | `WB_DEVICE_IP` | 自动探测 | 推送里的 IP |
@@ -201,7 +201,7 @@ workbuddy-auto-checkin/
 | `access_token` | `WORKBUDDY_ACCESS_TOKEN` | 空 | 仅客户端未运行时临时用，正常留空 |
 | `user_id` | `WORKBUDDY_USER_ID` | 空 | 配合上面一条使用 |
 | `account_name` | `WB_ACCOUNT_NAME` | 空 | 手动填 token 时显示用 |
-| `tasks` | `WB_TASKS` | 全部启用 | 任务开关（见下节），对**所有账号/机器**统一生效 |
+| `tasks` | 面板 `WORKBUDDY_CONFIG.tasks` | 全部启用 | 任务开关（见下节），对**所有账号/机器**统一生效 |
 
 webhook key 获取：企业微信群 → 右上角「…」→ 群机器人 → 添加机器人 → 复制 Webhook 地址，取 `key=` 后面那段（贴整条 URL 不行）。
 
@@ -209,19 +209,26 @@ webhook key 获取：企业微信群 → 右上角「…」→ 群机器人 → 
 
 ### 6.1 任务开关（哪些活动要自动执行）
 
-`config.json` 里的 `tasks` 是**全局一份**，对所有账号和机器生效；青龙面板上没有 config.json，用环境变量 `WB_TASKS`（JSON）覆盖，优先级最高：
+`config.json` 里的 `tasks` 是**全局一份**，对所有账号和机器生效；青龙面板上没有 config.json，改面板唯一变量 `WORKBUDDY_CONFIG` 的 `tasks` 字段即可（优先级最高）：
 
-```json
+```jsonc
+// 本机 config.json
 "tasks": {
   "checkin": true,
   "cat_travel": false
 }
 ```
 
-```bash
-# 青龙面板环境变量（等价写法）
-WB_TASKS='{"cat_travel":false}'
+```jsonc
+// 青龙面板 WORKBUDDY_CONFIG（其余字段保持不变）
+{
+  "accounts": [...],
+  "qw_webhook": "...",
+  "tasks": {"cat_travel": false}
+}
 ```
+
+> 老版本用过的独立环境变量 `WB_TASKS` 仍兼容（优先级高于 config.json），新部署统一放 `WORKBUDDY_CONFIG` 一个变量里。
 
 | 任务名 | 默认 | 说明 |
 |---|---|---|
@@ -324,14 +331,20 @@ crontab -e
 2. 订阅管理 → 新建订阅：仓库 `GitKWorker/workbuddy-auto-checkin`（脚本更新自动同步）
 3. 定时任务 → 新建：命令 `task workbuddy_checkin.py run`，cron `5 9 * * *`
 
-环境变量 `WB_ACCOUNTS` **无需手动建**——本机首次推送时自动创建，格式：
+环境变量 `WORKBUDDY_CONFIG` **无需手动建**——本机首次推送时自动创建，面板上只有这**一个**变量，包含账号、webhook、任务开关三部分：
 
 ```json
-[
-  {"machine": "EC63D7AFE1DC", "device": "台式机-书房", "account": "兰心",
-   "token": "eyJ...", "uid": "6acf...", "updated_at": "2026-11-12 15:00"}
-]
+{
+  "accounts": [
+    {"machine": "EC63D7AFE1DC", "device": "台式机-书房", "account": "兰心",
+     "token": "eyJ...", "uid": "6acf...", "updated_at": "2026-11-12 15:00"}
+  ],
+  "qw_webhook": "企微群机器人 key",
+  "tasks": {"checkin": true, "cat_travel": true}
+}
 ```
+
+> 旧版的两个变量 `WB_ACCOUNTS`（账号）和 `QW_WEBHOOK`（企微 key）仍能读；首次执行 `push_server` 会自动合并进 `WORKBUDDY_CONFIG` 并删除旧变量，不用手工迁移。
 
 **本机侧（每台客户端各一次）**
 
@@ -352,8 +365,9 @@ python scripts\workbuddy_checkin.py push_server
 ```
 
 - 按 `machine`（物理网卡 MAC，可用 `WB_MACHINE_ID` 覆盖）幂等合并：已有则更新、没有则追加
+- 推送时保留面板上已有的 `qw_webhook` / `tasks`，只更新自己的那条账号记录（读改写，不会覆盖别人的字段）
 - 建议：本机每日签到任务顺带执行 `push_server`，token（约 55 天有效期）永远新鲜
-- 面板侧 `run` 检测到 `WB_ACCOUNTS` 自动进入**多账号模式**：逐台签到/领奖，各自推送企微（设备名区分）
+- 面板侧 `run` 检测到 `WORKBUDDY_CONFIG.accounts` 自动进入**多账号模式**：逐台签到/领奖，各自推送企微（设备名区分）
 - ⚠️ 面板即敏感资产：强密码、勿裸暴露公网；Client Secret 只存本机与面板两处
 
 ---
