@@ -69,6 +69,8 @@ cd "%USERPROFILE%\.workbuddy\skills\workbuddy-auto-checkin\scripts" && python wo
 | 检查签到状态 | `python workbuddy_checkin.py status` | 仅查询签到状态/连签/本周进度 |
 | 签到 | `python workbuddy_checkin.py checkin` | 未签则签，已签幂等跳过 |
 | 查询积分 | `python workbuddy_checkin.py point` | 剩余积分总额 + 额度分项 + 今日/连签 |
+| 查询连登奖励 | `python workbuddy_checkin.py streak` | 连登天数 + 7/14/28 天档位状态与奖励 |
+| 领取连登奖励 | `python workbuddy_checkin.py streak_claim` | 领取所有可领档位，未达标明确提示不算失败 |
 | 查询猫猫档案 | `python workbuddy_checkin.py cat_status` | 猫猫昵称/稀有度/性格 + 旅行目的地/ETA/奖励 |
 | 领取旅行奖励 | `python workbuddy_checkin.py cat_claim` | 到达则领奖，未到达明确提示不算失败 |
 | 推送到青龙面板 | `python workbuddy_checkin.py push_server` | 本机登录态 -> 面板 `WORKBUDDY_CONFIG`（按 MAC 幂等合并，保留 webhook/tasks）

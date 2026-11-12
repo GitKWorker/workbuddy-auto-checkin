@@ -120,14 +120,26 @@ POST https://www.codebuddy.cn/billing/meter/get-user-resource-summary
 
 前缀差异不是笔误：客户端里签到用 `billingPrefix`（`/v2`），积分用 `resourcePrefix`（空字符串），两条路由挂在不同的网关路径上。
 
-### 3.4 幂等
+### 3.4 连登奖励（成长中心 growth-center）
+
+网页版 `www.workbuddy.cn/profile/growth-center` 与脚本用同一套接口：
+
+| 用途 | 接口 |
+|---|---|
+| 连登状态 | `GET /activity/growth/streak`（`streak.days` / `next_tier` / `redemption_status.tiers`） |
+| 兑换档位 | `POST /activity/growth/redeem`，body `{"tier":"7d","client_token":"<uuid>"}` |
+
+档位规则：7 天档（能量 2 / 补登卡 1 / 抽奖 1）、14 天档（+50 积分）、28 天档（+150 积分）；**每档每月限兑 1 次**，连登天数每月清零重算，兑换不扣减连登天数。
+档位状态 `locked`（未达标）/ `available`（可领）/ `claimed`（本月已领），脚本只对 `available` 发起兑换。
+
+### 3.5 幂等
 
 - 签到成功：`code=0`
 - 今日已签到：`code=10001`，且**以 HTTP 400 返回**，业务 JSON 在 body 里 —— 脚本按「成功 + 跳过」处理，不当失败。
 
 所以一天跑多次、多个定时任务重叠，都不会报错或重复领取。
 
-### 3.5 推送内容
+### 3.6 推送内容
 
 ```
 【WorkBuddy 自动签到】
@@ -142,6 +154,8 @@ POST https://www.codebuddy.cn/billing/meter/get-user-resource-summary
 💰 剩余积分: 784.06 (体验版)
    └ 套餐基础积分 384.06/500 · 平台奖励积分 400/400
 📅 本周: 4/7 天 (每日 100 积分)
+🔥 连登: 4 天, 距 7天档还差 3 天        ← 有档位可领时变为 🎁 连登: 已领取 7天档(能量+2 补登卡+1 抽奖次数+1)
+🐱 派猫旅行: 暗影喵 在「咖啡馆」旅行中, 预计 56分钟 后(17:17)到达, 奖励 6 积分
 ```
 
 - 内网 IP 用 UDP `connect` 探测默认出口地址获取（**不实际发包**）
@@ -233,6 +247,7 @@ webhook key 获取：企业微信群 → 右上角「…」→ 群机器人 → 
 | 任务名 | 默认 | 说明 |
 |---|---|---|
 | `checkin` | ✅ 启用 | 查状态 + 幂等签到，拿每日积分 |
+| `streak_reward` | ✅ 启用 | 连登档位（7/14/28 天）达标后自动兑换能量/补登卡/积分/抽奖次数 |
 | `cat_travel` | ✅ 启用 | 行程中报 ETA，到达后自动领奖 |
 | _未登记的新任务_ | ✅ 启用 | 配置里没写的任务按启用处理，方便灰度上线 |
 

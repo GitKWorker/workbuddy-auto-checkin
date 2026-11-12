@@ -431,6 +431,67 @@ def claim_travel(token, uid):
     return False, f"未领取: HTTP {st} code={code} {msg[:60]}"
 
 
+# ---------- 连登奖励(成长中心, 网页版 GrowthCenter 用同一套接口) ----------
+#   GET  /activity/growth/streak   连登天数/档位状态(available/claimed/locked)
+#   POST /activity/growth/redeem   {tier:"7d", client_token:<uuid>} 兑换档位
+# 档位: 7d(能量2/补登卡1/抽奖1) / 14d(+50积分) / 28d(+150积分), 每档每月限兑1次
+STREAK_URL = "https://www.codebuddy.cn/activity/growth/streak"
+STREAK_REDEEM_URL = "https://www.codebuddy.cn/activity/growth/redeem"
+
+
+def get_streak(token, uid):
+    """连登信息: {streak:{days,...}, redemption_status:{tier_7d_status,...}, ...}"""
+    st, body = _get(STREAK_URL, token, uid)
+    if st == 200 and body.get("code") == 0 and isinstance(body.get("data"), dict):
+        return body["data"]
+    return None
+
+
+def claim_streak_rewards(token, uid):
+    """领取所有可领(available)的连登档位。返回 (领取列表, 状态描述)。"""
+    d = get_streak(token, uid)
+    if not d:
+        return [], "连登信息查询失败"
+    streak = d.get("streak") or {}
+    days = _num(streak.get("days")) or 0
+    red = d.get("redemption_status") or {}
+    tiers = red.get("tiers") or []
+    next_tier = streak.get("next_tier")
+    remain = streak.get("next_tier_remaining")
+
+    got = []
+    for t in tiers:
+        name = str(t.get("tier") or "")
+        if not name:
+            continue
+        if red.get(f"tier_{name}_status") != "available":
+            continue
+        st, body = _post(STREAK_REDEEM_URL, token, uid,
+                         {"tier": name, "client_token": str(uuid.uuid4())})
+        label = f"{int(_num(t.get('days')) or 0)}天档" if t.get("days") else f"{name}档"
+        if st == 200 and body.get("code") == 0:
+            data = body.get("data") or {}
+            parts = []
+            for k, unit in (("credit", "积分"), ("energy", "能量"),
+                            ("cards", "补登卡"), ("chances", "抽奖次数")):
+                v = _num(data.get(k)) or _num(t.get(k))
+                if v:
+                    parts.append(f"{unit}+{fmt_credit(v) if k == 'credit' else int(v)}")
+            if not parts:
+                parts = [f"能量+{t.get('energy', 0)}", f"补登卡+{t.get('cards', 0)}"]
+            got.append(label + "(" + " ".join(parts) + ")")
+        else:
+            msg = str(body.get("msg") or body.get("error_msg") or "").strip()
+            got.append(f"{label}领取失败({msg[:30] or 'code=' + str(body.get('code'))})")
+
+    if got:
+        return got, "已领取 " + "、".join(got)
+    if next_tier and remain:
+        tier_label = f"{next_tier.replace('d', '天')}档" if next_tier.endswith("d") else f"{next_tier}档"
+        return [], f"{int(days)} 天, 距 {tier_label}还差 {int(remain)} 天"
+    return [], f"{int(days)} 天, 暂无可领档位"
+
+
 def _load_config():
     """技能目录下的 config.json(与 SKILL.md 同级), 可选。
     支持字段: qw_webhook / access_token / account_note / user_id / tasks(任务开关)
@@ -448,8 +509,9 @@ def _load_config():
 # 注册表: 名称 -> (显示名, 默认是否执行, 说明)
 # 新增活动时: 在这里加一行 + 在 process_account 里用 task_enabled("<名称>") 包住执行块
 TASK_REGISTRY = [
-    ("checkin",    "每日签到",   True, "查状态并幂等签到, 拿每日积分"),
-    ("cat_travel", "派猫旅行",   True, "行程中报 ETA, 到达后自动领奖"),
+    ("checkin",       "每日签到",   True, "查状态并幂等签到, 拿每日积分"),
+    ("streak_reward", "连登奖励",   True, "连登档位(7/14/28天)达标后自动兑换能量/补登卡/积分/抽奖次数"),
+    ("cat_travel",    "派猫旅行",   True, "行程中报 ETA, 到达后自动领奖"),
 ]
 
 
@@ -902,7 +964,19 @@ def process_account(token, uid, account, note, device, ip):
                      f"(每日 {data.get('daily_credit', '?')} 积分)")
         log(lines[-1])
 
-    # 5. 派猫旅行: 行程中报 ETA, 已到达则领奖, 均不影响推送
+    # 5. 连登奖励: 达标档位自动兑换(每档每月限兑1次)
+    if not task_enabled("streak_reward"):
+        log("⏭ 跳过连登奖励(tasks.streak_reward=false)")
+    else:
+        try:
+            got, streak_msg = claim_streak_rewards(token, uid)
+            lines.append(("🎁 " if got else "🔥 ") + f"连登: {streak_msg}")
+            log(lines[-1])
+        except Exception as e:
+            lines.append(f"⚠️ 连登奖励异常: {e}")
+            log(lines[-1])
+
+    # 6. 派猫旅行: 行程中报 ETA, 已到达则领奖, 均不影响推送
     if not task_enabled("cat_travel"):
         log("⏭ 跳过派猫旅行(tasks.cat_travel=false)")
     else:
@@ -1019,6 +1093,25 @@ def main():
             print(f"今日积分: {data.get('today_credit', '?')} | 每日: {data.get('daily_credit', '?')} "
                   f"| 连签: {data.get('streak_days', '?')} 天")
         sys.exit(0 if info else 1)
+    elif arg in ("streak", "streak_claim"):
+        print(f"账号: {account} | 设备: {device} ({ip})")
+        d = get_streak(token, uid)
+        if not d:
+            print("连登信息查询失败(接口可能变更)")
+            sys.exit(1)
+        s = d.get("streak") or {}
+        red = d.get("redemption_status") or {}
+        print(f"连登 {s.get('days')} 天 | 本月累计 {s.get('month_total_days')} 天"
+              f" | 下一档 {s.get('next_tier')} 还差 {s.get('next_tier_remaining')} 天")
+        for t in red.get("tiers") or []:
+            n = t.get("tier")
+            print(f"  {n:<4} 状态 {red.get('tier_' + str(n) + '_status')} | "
+                  f"积分 {t.get('credit')} 能量 {t.get('energy')} "
+                  f"补登卡 {t.get('cards')} 抽奖 {t.get('chances')}")
+        if arg == "streak_claim":
+            got, msg = claim_streak_rewards(token, uid)
+            print(msg)
+            sys.exit(0 if got or "还差" in msg or "暂无" in msg else 1)
     elif arg in ("cat_status", "cat_claim", "cat_start", "cat_reward"):
         # cat_start/cat_reward 为旧命令名, 保留兼容: start 无接口(旅行自动进行),
         # reward 等同 claim
