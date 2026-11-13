@@ -741,11 +741,8 @@ def claim_streak_rewards(token, uid):
     d = get_streak(token, uid)
     if not d:
         return [], "连登信息查询失败"
-    streak = d.get("streak") or {}
-    days = _num(streak.get("days")) or 0
     red = d.get("redemption_status") or {}
     tiers = red.get("tiers") or []
-    next_tier = streak.get("next_tier")
 
     only = task_option("streak_reward", "tiers")
     only = {str(x) for x in only} if isinstance(only, (list, tuple)) else None
@@ -779,12 +776,9 @@ def claim_streak_rewards(token, uid):
 
     if got:
         return got, "已领取 " + "、".join(got)
-    if next_tier:
-        tier_label = f"{next_tier.replace('d', '天')}档" if next_tier.endswith("d") else f"{next_tier}档"
-        remain = _streak_remaining(streak, red)
-        if remain is not None:
-            return [], f"{int(days)} 天, 距 {tier_label}还差 {remain} 天"
-    return [], f"{int(days)} 天, 暂无可领档位"
+    # 无可领档位: 返回空消息, 调用方只记日志不推送
+    # (服务端 next_tier_remaining 口径混乱, 连登天数/差几天不再进推送)
+    return [], ""
 
 
 def _load_config():
@@ -1228,9 +1222,7 @@ def process_account(token, uid, account, note, device, ip):
     ok, data = checkin_status(token, uid)
     if ok:
         already = data.get("today_checked_in", False)
-        streak = data.get("streak_days")
-        lines.append(f"📋 状态: {'今日已签到' if already else '今日未签到'}"
-                     + (f", 连签 {streak} 天" if streak is not None else ""))
+        lines.append(f"📋 状态: {'今日已签到' if already else '今日未签到'}")
         log(lines[-1])
     else:
         lines.append(f"📋 状态查询失败: {json.dumps(data, ensure_ascii=False)[:80]}")
@@ -1277,9 +1269,12 @@ def process_account(token, uid, account, note, device, ip):
     else:
         try:
             got, streak_msg = claim_streak_rewards(token, uid)
-            lines.append(("🎁 " if got else "🔥 ") + f"连登: {streak_msg}")
             flags["streak_claimed"] = bool(got)
-            log(lines[-1])
+            if streak_msg:
+                lines.append(("🎁 " if got else "❌ ") + f"连登: {streak_msg}")
+                log(lines[-1])
+            else:
+                log("连登: 无可领档位(不推送)")
         except Exception as e:
             lines.append(f"⚠️ 连登奖励异常: {e}")
             flags["error"] = True
