@@ -16,6 +16,7 @@
   "account_name": "",
   "_tasks": "任务开关：true=执行，false=跳过。未写的任务按默认(启用)处理，对所有账号/机器生效。青龙面板上改 WORKBUDDY_CONFIG.tasks（优先于本文件），如 {\"cat_travel\":false}",
   "_cat_travel_location": "派猫目的地，可选 coffee/mall/gym/ancient_town 或中文名、id；留空或 random 则每次随机",
+  "_log_keep_days": "日志保留天数, 默认30; scripts/logs/checkin.log 与 debug.log 启动时自动清理超过天数的行",
   "_streak_tiers": "只想自动领部分连登档位时改成 {\"enabled\":true,\"tiers\":[\"14d\",\"28d\"]}；不写 tiers 则 7/14/28 三档都领",
   "tasks": {
     "checkin": true,

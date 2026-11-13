@@ -5,3 +5,6 @@ __pycache__/
 *.pyc
 .DS_Store
 debug.log
+
+# 运行日志(自动滚动, 只留最近30天)
+logs/

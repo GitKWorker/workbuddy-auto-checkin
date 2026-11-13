@@ -47,7 +47,7 @@ import sys
 import urllib.error
 import urllib.request
 import uuid
-from datetime import datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 API_BASE = "https://www.codebuddy.cn/v2/billing/meter"
@@ -79,10 +79,89 @@ MAC_AUTH_FILE = (
 )
 HELPER_JS = Path(__file__).resolve().parent / "wb_auth_helper.js"
 CONFIG_FILE = Path(__file__).resolve().parent.parent / "config.json"
+SCRIPT_DIR = Path(__file__).resolve().parent
+LOG_FILE = SCRIPT_DIR / "logs" / "checkin.log"      # 脚本自写日志(带日期, 自动滚动)
+DEBUG_LOG = SCRIPT_DIR / "debug.log"                # Electron crashpad 噪音日志
+
+
+def _log_keep_days():
+    """日志保留天数: config.log_keep_days, 默认 30。"""
+    try:
+        v = int(_load_config().get("log_keep_days", 30))
+        return v if v > 0 else 30
+    except Exception:
+        return 30
 
 
 def log(msg):
-    print(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}", flush=True)
+    """打印并在 logs/checkin.log 追加一行(带完整日期, 便于按天滚动清理)。"""
+    line = f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {msg}"
+    print(line, flush=True)
+    try:
+        LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+        with open(LOG_FILE, "a", encoding="utf-8") as f:
+            f.write(line + "\n")
+    except Exception:
+        pass
+
+
+def _cutoff(days):
+    return date.today() - timedelta(days=max(0, int(days)))
+
+
+def _trim_file(path, parser):
+    """按行时间戳清理: 返回 (保留行数, 删除行数)。无时间戳的行保留。"""
+    try:
+        if not path.exists():
+            return 0, 0
+        cutoff = _cutoff(_log_keep_days())
+        kept, removed = [], 0
+        for line in path.read_text(encoding="utf-8", errors="replace").splitlines(True):
+            d = parser(line)
+            if d is None or d >= cutoff:
+                kept.append(line)
+            else:
+                removed += 1
+        if removed:
+            path.write_text("".join(kept), encoding="utf-8")
+        return len(kept), removed
+    except Exception:
+        return -1, -1
+
+
+def _log_date(line):
+    m = re.match(r"\[(\d{4}-\d{2}-\d{2})[ T]", line)
+    if not m:
+        return None
+    try:
+        return date.fromisoformat(m.group(1))
+    except ValueError:
+        return None
+
+
+def _crashpad_date(line):
+    # debug.log 行形如 [1112/192110.865:ERROR:...], MMDD/HHMMSS, 无年份
+    m = re.match(r"\[(\d{2})(\d{2})/\d{6}\.", line)
+    if not m:
+        return None
+    try:
+        d = date(date.today().year, int(m.group(1)), int(m.group(2)))
+    except ValueError:
+        return None
+    # 月日比今天靠后说明是去年同期的记录
+    if d > date.today():
+        d = date(d.year - 1, d.month, d.day)
+    return d
+
+
+def trim_old_logs():
+    """启动时自动清理: 只保留最近 N 天(config.log_keep_days, 默认 30)的日志。"""
+    k1, r1 = _trim_file(LOG_FILE, _log_date)
+    k2, r2 = _trim_file(DEBUG_LOG, _crashpad_date)
+    if r1 > 0:
+        print(f"[log] checkin.log 清理 {r1} 行(> {_log_keep_days()} 天), 保留 {k1} 行", flush=True)
+    if r2 > 0:
+        print(f"[log] debug.log 清理 {r2} 行(> {_log_keep_days()} 天), 保留 {k2} 行", flush=True)
 
 
 # ---------- 凭证解析 ----------
@@ -1354,6 +1433,7 @@ def run_all(quiet=False):
 
 def main():
     arg = sys.argv[1] if len(sys.argv) > 1 else "run"
+    trim_old_logs()
 
     if arg == "run":
         quiet = len(sys.argv) > 2 and sys.argv[2] in ("quiet", "--quiet", "silent")

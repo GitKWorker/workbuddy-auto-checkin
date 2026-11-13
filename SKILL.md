@@ -3,7 +3,7 @@ name: workbuddy-auto-checkin
 display_name: WorkBuddy签到+积分查询+企微推送
 description: Buddy加油站每日签到（自动从本机 WorkBuddy 客户端解密登录态），幂等跳过已完成任务，一键执行后推送企微明细（含账号名、设备名、设备 IP 与剩余积分）
 author: 龙猫科技说复刻增强版（带积分）
-version: 1.12
+version: 1.13
 agent_created: true
 permissions:
   - http.fetch
@@ -109,6 +109,8 @@ cd "%USERPROFILE%\.workbuddy\skills\workbuddy-auto-checkin\scripts" && python wo
 1. 派猫行程 1~4 小时，9:05 出发后要 10~13 点才到达，那一次跑只会看到「旅行中，预计 X 后到达」，领不到奖
 2. 想当天领奖，白天再手动跑一次 `run`（或加一条 `run quiet` 定时，只在领到奖励时推送）
 3. `run quiet` 适合高频巡检：没有收获时只打日志、不推企微，不会刷群
+
+- 脚本每次启动会把日志写入 `scripts/logs/checkin.log`（带完整日期），并自动清理超过 `log_keep_days`（config 可调，默认 30 天）的旧行；`debug.log`（Electron 噪音）同样滚动。
 
 完整实现说明、配置项、常见问题见同目录 `README.md`。
 

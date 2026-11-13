@@ -397,9 +397,10 @@ python3 scripts/workbuddy_checkin.py run   # 先手动跑一次验证
 
 ```bash
 crontab -e
-# 每天 9:05 完整跑(推送), 白天 11-21 点每 2 小时静默巡检(只在领到奖励/出错时推送)
-5 9 * * * cd ~/wb-checkin && /usr/bin/python3 scripts/workbuddy_checkin.py run >> checkin.log 2>&1
-5 11-21/2 * * * cd ~/wb-checkin && /usr/bin/python3 scripts/workbuddy_checkin.py run quiet >> checkin.log 2>&1
+# 每天 9:05 完整跑(推送), 白天每 2 小时静默巡检(只在领到奖励/出错时推送)
+# 脚本自带日志 logs/checkin.log(带日期, 启动时自动清理 >30 天的行), 无需 shell 重定向
+5 9 * * * cd ~/wb-checkin && /usr/bin/python3 scripts/workbuddy_checkin.py run
+5 11-21/2 * * * cd ~/wb-checkin && /usr/bin/python3 scripts/workbuddy_checkin.py run quiet
 ```
 
 **注意事项**
@@ -507,6 +508,7 @@ A：不会。`code=10001` 按幂等成功处理。
 
 | 版本 | 变更 |
 |---|---|
+| 1.13 | 自带日志 `scripts/logs/checkin.log`（带完整日期），启动时自动清理超过 `log_keep_days`（默认 30 天）的行；`debug.log`（Electron 噪音）同样按 30 天滚动 |
 | 1.12 | 推送瘦身：状态行并入签到行（`✅ 签到: 今日已签到`/`签到成功 +100 积分`/失败，恒一行）；连登行去掉天数与“距 X 档还差 Y 天”，无可领档位时整行不推 |
 | 1.11 | 修复多账号连登提示：服务端 `next_tier_remaining` 在连登中断后不重置（days=1 仍报差 3 天），改为按档位表本地计算 `档位天数 - 连登天数` |
 | 1.11 | 修复多账号连登提示：服务端 `next_tier_remaining` 在连登中断后不重置（days=1 仍报差 3 天），改为按档位表本地计算 `档位天数 - 连登天数` |
