@@ -508,6 +508,7 @@ A：不会。`code=10001` 按幂等成功处理。
 
 | 版本 | 变更 |
 |---|---|
+| 1.11 | 修复多账号连登提示：服务端 `next_tier_remaining` 在连登中断后不重置（days=1 仍报差 3 天），改为按档位表本地计算 `档位天数 - 连登天数` |
 | 1.10 | 推送增加 `🧩 客户端: WorkBuddy <版本>`（读 `resources/install-manifest.json`，退回 exe 文件版本） |
 | 1.9 | 设备 IP 优先 IPv4，本机无 IPv4 时才退回 IPv6 并标注 `[IPv6]`；公网接口先试仅 A 记录的 v4 端点 |
 | 1.8 | 派猫旅行支持**主动出发**（`travel/config` 地点表 + `travel/depart`，每日 1 次，地点可指定或随机）；新增 `cat_depart` 命令与 `run quiet` 静默巡检（只在领到奖励/出错时推送） |

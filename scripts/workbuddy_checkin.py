@@ -712,6 +712,26 @@ def get_streak(token, uid):
     return None
 
 
+def _streak_remaining(streak, red):
+    """距下一档还差几天: 按档位表自己算(档位天数 - 当前连登天数)。
+
+    不用服务端的 next_tier_remaining: 连登中断后它不会跟着重置,
+    实测出现过 days=1 但服务端仍报 remaining=3(按中断前的 4 天算的)。
+    """
+    days = _num(streak.get("days")) or 0
+    next_tier = str(streak.get("next_tier") or "")
+    # 优先从档位表取该档的达标天数
+    for t in (red or {}).get("tiers") or []:
+        if str(t.get("tier") or "") == next_tier and _num(t.get("days")):
+            return max(0, int(_num(t["days"])) - int(days))
+    # 档位表没有时从名字解析(如 "7d" -> 7)
+    if next_tier.endswith("d") and next_tier[:-1].isdigit():
+        return max(0, int(next_tier[:-1]) - int(days))
+    # 解析不了才退回服务端值
+    remain = _num(streak.get("next_tier_remaining"))
+    return int(remain) if remain else None
+
+
 def claim_streak_rewards(token, uid):
     """领取可领(available)的连登档位。返回 (领取列表, 状态描述)。
 
@@ -726,7 +746,6 @@ def claim_streak_rewards(token, uid):
     red = d.get("redemption_status") or {}
     tiers = red.get("tiers") or []
     next_tier = streak.get("next_tier")
-    remain = streak.get("next_tier_remaining")
 
     only = task_option("streak_reward", "tiers")
     only = {str(x) for x in only} if isinstance(only, (list, tuple)) else None
@@ -760,9 +779,11 @@ def claim_streak_rewards(token, uid):
 
     if got:
         return got, "已领取 " + "、".join(got)
-    if next_tier and remain:
+    if next_tier:
         tier_label = f"{next_tier.replace('d', '天')}档" if next_tier.endswith("d") else f"{next_tier}档"
-        return [], f"{int(days)} 天, 距 {tier_label}还差 {int(remain)} 天"
+        remain = _streak_remaining(streak, red)
+        if remain is not None:
+            return [], f"{int(days)} 天, 距 {tier_label}还差 {remain} 天"
     return [], f"{int(days)} 天, 暂无可领档位"
 
 
@@ -1398,7 +1419,7 @@ def main():
         s = d.get("streak") or {}
         red = d.get("redemption_status") or {}
         print(f"连登 {s.get('days')} 天 | 本月累计 {s.get('month_total_days')} 天"
-              f" | 下一档 {s.get('next_tier')} 还差 {s.get('next_tier_remaining')} 天")
+              f" | 下一档 {s.get('next_tier')} 还差 {_streak_remaining(s, red)} 天")
         for t in red.get("tiers") or []:
             n = t.get("tier")
             print(f"  {n:<4} 状态 {red.get('tier_' + str(n) + '_status')} | "

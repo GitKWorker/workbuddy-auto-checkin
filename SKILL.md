@@ -3,7 +3,7 @@ name: workbuddy-auto-checkin
 display_name: WorkBuddy签到+积分查询+企微推送
 description: Buddy加油站每日签到（自动从本机 WorkBuddy 客户端解密登录态），幂等跳过已完成任务，一键执行后推送企微明细（含账号名、设备名、设备 IP 与剩余积分）
 author: 龙猫科技说复刻增强版（带积分）
-version: 1.10
+version: 1.11
 agent_created: true
 permissions:
   - http.fetch
