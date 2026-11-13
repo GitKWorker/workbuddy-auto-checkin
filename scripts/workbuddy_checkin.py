@@ -1218,21 +1218,18 @@ def process_account(token, uid, account, note, device, ip):
     age = token_age_desc(token)
     lines.append(f"🔑 token: {age or '有效期未知(非标准JWT)'}")
 
-    # 1. 查状态
+    # 1. 查状态(不单独成行, 结果并入下面的签到行)
     ok, data = checkin_status(token, uid)
-    if ok:
-        already = data.get("today_checked_in", False)
-        lines.append(f"📋 状态: {'今日已签到' if already else '今日未签到'}")
-        log(lines[-1])
-    else:
-        lines.append(f"📋 状态查询失败: {json.dumps(data, ensure_ascii=False)[:80]}")
+    if not ok:
+        lines.append(f"⚠️ 签到状态查询失败: {json.dumps(data, ensure_ascii=False)[:80]}")
         log(lines[-1])
 
-    # 2. 幂等签到(已签到时推送里不单列, 状态行已说明; 实际签到或失败才单列)
+    # 2. 幂等签到: 一行说清结果(已签到/新签/失败), 不再与状态行重复
     if not task_enabled("checkin"):
         log("⏭ 跳过签到(tasks.checkin=false)")
     elif ok and data.get("today_checked_in"):
-        log("签到: 今日已签到(跳过)")
+        lines.append("✅ 签到: 今日已签到")
+        log(lines[-1])
     else:
         try:
             ok2, detail, _ = do_checkin(token, uid)

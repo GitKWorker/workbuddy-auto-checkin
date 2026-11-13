@@ -131,8 +131,7 @@ cd "%USERPROFILE%\.workbuddy\skills\workbuddy-auto-checkin\scripts" && python wo
   🧩 客户端: WorkBuddy 5.9.3      ← 本机客户端版本（install-manifest.json，退回 exe 版本）；读不到则省略
   🌐 IP: 10.1.9.15 / 公网 118.114.237.61   ← 默认 IPv4；本机无 v4 时才显示 [IPv6] 地址；公网可关（config.public_ip=false）
   ⏰ 2026-11-12 13:16:01
-  📋 状态: 今日已签到
-  ✅ 签到: 今日已签到(跳过)
+  ✅ 签到: 今日已签到              ← 恒一行: 已签到 / 签到成功 +N 积分 / 失败
   💰 剩余积分: 785.48 (体验版)
      └ 套餐基础积分 385.48/500 · 平台奖励积分 400/400
   📅 本周: 4/7 天 (每日 100 积分)
