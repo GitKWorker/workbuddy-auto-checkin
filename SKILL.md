@@ -3,7 +3,7 @@ name: workbuddy-auto-checkin
 display_name: WorkBuddy签到+积分查询+企微推送
 description: Buddy加油站每日签到（自动从本机 WorkBuddy 客户端解密登录态），幂等跳过已完成任务，一键执行后推送企微明细（含账号名、设备名、设备 IP 与剩余积分）
 author: 龙猫科技说复刻增强版（带积分）
-version: 1.14
+version: 1.15
 agent_created: true
 permissions:
   - http.fetch
@@ -136,7 +136,7 @@ cd "%USERPROFILE%\.workbuddy\skills\workbuddy-auto-checkin\scripts" && python wo
   ✅ 签到: 今日已签到              ← 恒一行: 已签到 / 签到成功 +N 积分 / 失败
   💰 剩余积分: 785.48 (体验版)
      └ 套餐基础积分 385.48/500 · 平台奖励积分 400/400
-  📉 消耗: 42.30 积分 (近 24 小时, 上次统计 11-12 09:05)   ← 接口无按天字段, 用本地快照差分; 首次运行只记基线
+  📉 消耗: 最近 23 小时消耗了 42.30 积分   ← 上次推送→这次的间隔与消耗(本地快照差分); 首次运行只记基线
   📅 本周: 4/7 天 (每日 100 积分)
   ```
 - 账号名取值顺序：客户端昵称 > 掩码手机号 > `uid` 前 8 位（手动填 token 时可用 `WB_ACCOUNT_NAME` / `config.account_name` 指定）

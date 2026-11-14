@@ -617,11 +617,23 @@ def used_credits(info):
     return round(sum(max(0.0, tot - (rem or 0)) for _, rem, tot in info["groups"]), 2)
 
 
-def consume_line(uid, used_now):
-    """消耗一行: 距上次统计之间消耗了多少积分。
+def _fmt_span(seconds):
+    """时间跨度文案: 35 分钟 / 1 小时 / 23 小时 / 3 天 2 小时。"""
+    seconds = max(0, int(seconds))
+    if seconds < 3600:
+        return f"{max(1, round(seconds / 60))} 分钟"
+    hours = seconds / 3600
+    if hours < 24:
+        return f"{round(hours)} 小时"
+    days, rest = int(hours // 24), round(hours % 24)
+    return f"{days} 天" + (f" {rest} 小时" if rest else "")
 
-    接口只给"本周期已用"累计值, 所以用上次运行时的快照做差分。
-    单日一次定时任务时, 该差值≈上次统计至今(约24小时)的消耗; 首次运行只记基线不出行。
+
+def consume_line(uid, used_now):
+    """消耗一行: 上次推送 -> 这次推送之间消耗了多少积分。
+
+    接口只给"本周期已用"累计值, 所以用上次运行时的快照做差分, 并给出真实时间跨度。
+    首次运行只记基线不出行; 差值负值(月度重置/退积分)也不出行。
     """
     if used_now is None:
         return None
@@ -629,22 +641,17 @@ def consume_line(uid, used_now):
     key = uid or "default"
     prev = state.get(key) or {}
     ts_prev, used_prev = prev.get("ts"), prev.get("used")
-    state[key] = {"ts": int(time.time()), "used": used_now,
+    now = time.time()
+    state[key] = {"ts": int(now), "used": used_now,
                   "at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
     _save_usage_state(state)
     if used_prev is None:
         return None
     delta = round(used_now - float(used_prev), 2)
     if delta < 0:
-        # 月度额度重置或退积分, 差值无意义, 本次不出行
         return None
-    span = ""
-    if ts_prev:
-        hours = (time.time() - float(ts_prev)) / 3600
-        span = "近 24 小时" if 20 <= hours <= 28 else (
-            f"近 {hours:.0f} 小时" if hours >= 1 else "一会儿")
-        span += f", 上次统计 {datetime.fromtimestamp(float(ts_prev)).strftime('%m-%d %H:%M')}"
-    return f"📉 消耗: {fmt_credit(delta)} 积分" + (f" ({span})" if span else "")
+    span = f"最近 {_fmt_span(now - float(ts_prev))}" if ts_prev else ""
+    return f"📉 消耗: {span}消耗了 {fmt_credit(delta)} 积分"
 
 
 def get_buddy_info(token, uid):
