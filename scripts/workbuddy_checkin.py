@@ -44,6 +44,7 @@ import random
 import re
 import subprocess
 import sys
+import time
 import urllib.error
 import urllib.request
 import uuid
@@ -588,6 +589,62 @@ def balance_detail(info):
         return ""
     return " · ".join(f"{name} {fmt_credit(rem)}/{fmt_credit(tot)}"
                       for name, rem, tot in info["groups"])
+
+
+# ---------- 消耗统计(接口只有"本周期已用", 按账号本地记账做差分) ----------
+USAGE_STATE = SCRIPT_DIR / "logs" / "usage_state.json"
+
+
+def _load_usage_state():
+    try:
+        return json.loads(USAGE_STATE.read_text(encoding="utf-8")) or {}
+    except Exception:
+        return {}
+
+
+def _save_usage_state(state):
+    try:
+        USAGE_STATE.parent.mkdir(parents=True, exist_ok=True)
+        USAGE_STATE.write_text(json.dumps(state, ensure_ascii=False, indent=1), encoding="utf-8")
+    except Exception:
+        pass
+
+
+def used_credits(info):
+    """本周期已消耗积分(套餐内额度). 接口无"今日已用", 用 总额-剩余 求和。"""
+    if not info:
+        return None
+    return round(sum(max(0.0, tot - (rem or 0)) for _, rem, tot in info["groups"]), 2)
+
+
+def consume_line(uid, used_now):
+    """消耗一行: 距上次统计之间消耗了多少积分。
+
+    接口只给"本周期已用"累计值, 所以用上次运行时的快照做差分。
+    单日一次定时任务时, 该差值≈上次统计至今(约24小时)的消耗; 首次运行只记基线不出行。
+    """
+    if used_now is None:
+        return None
+    state = _load_usage_state()
+    key = uid or "default"
+    prev = state.get(key) or {}
+    ts_prev, used_prev = prev.get("ts"), prev.get("used")
+    state[key] = {"ts": int(time.time()), "used": used_now,
+                  "at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
+    _save_usage_state(state)
+    if used_prev is None:
+        return None
+    delta = round(used_now - float(used_prev), 2)
+    if delta < 0:
+        # 月度额度重置或退积分, 差值无意义, 本次不出行
+        return None
+    span = ""
+    if ts_prev:
+        hours = (time.time() - float(ts_prev)) / 3600
+        span = "近 24 小时" if 20 <= hours <= 28 else (
+            f"近 {hours:.0f} 小时" if hours >= 1 else "一会儿")
+        span += f", 上次统计 {datetime.fromtimestamp(float(ts_prev)).strftime('%m-%d %H:%M')}"
+    return f"📉 消耗: {fmt_credit(delta)} 积分" + (f" ({span})" if span else "")
 
 
 def get_buddy_info(token, uid):
@@ -1331,6 +1388,11 @@ def process_account(token, uid, account, note, device, ip):
     log(lines[-2])
     if not info:
         log(f"   积分接口响应: {json.dumps(raw, ensure_ascii=False)[:120]}")
+    else:
+        used_line = consume_line(uid, used_credits(info))
+        if used_line:
+            lines.append(used_line)
+            log(used_line)
 
     # 4. 汇总本周进度
     if ok and data.get("week_progress"):
