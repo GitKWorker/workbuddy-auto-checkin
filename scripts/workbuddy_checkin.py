@@ -1124,7 +1124,7 @@ def _b64d(v):
 
 
 def _parse_accounts(raw):
-    """解析 WB_ACCOUNTS JSON -> [{machine, device, account, token, uid, updated_at}]。"""
+    """解析 WB_ACCOUNTS JSON -> [{machine, device, ip, account, token, uid, updated_at}]。"""
     try:
         data = json.loads(raw)
     except (json.JSONDecodeError, TypeError) as e:
@@ -1191,6 +1191,7 @@ def push_server():
     entry = {
         "machine": machine_id(),
         "device": device,
+        "ip": _ip,
         "account": account,
         "token": token,
         "uid": uid,
@@ -1462,14 +1463,18 @@ def run_all(quiet=False):
 
     # 多账号模式(面板统一配置 WORKBUDDY_CONFIG 里的 accounts, 每台机器一组凭证)
     if accounts:
-        ip = get_device_ip()
+        server_ip = get_device_ip()   # 兜底: 面板服务器自己的 IP
         log(f"多账号模式({pc.get('source') or '环境变量'}): 共 {len(accounts)} 台机器")
         for a in accounts:
             machine = str(a.get("machine", "?"))
             device = str(a.get("device") or f"机器{machine}")
             account = str(a.get("account") or device)
             note = str(a.get("note") or "")
-            log(f"—— {device} ({machine}) | {account} ——")
+            # 每台机器推送自己同步时记录的 IP; 老条目没记录才退回服务器 IP
+            ip = (str(a.get("ip") or "").strip()
+                  or str(a.get("device_ip") or "").strip()
+                  or server_ip)
+            log(f"—— {device} ({machine}) | {account} | {ip} ——")
             try:
                 lines, flags = process_account(a["token"], str(a.get("uid") or ""),
                                                account, note, device, ip)

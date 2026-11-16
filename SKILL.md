@@ -3,7 +3,7 @@ name: workbuddy-auto-checkin
 display_name: WorkBuddy签到+积分查询+企微推送
 description: Buddy加油站每日签到（自动从本机 WorkBuddy 客户端解密登录态），幂等跳过已完成任务，一键执行后推送企微明细（含账号名、设备名、设备 IP 与剩余积分）
 author: 龙猫科技说复刻增强版（带积分）
-version: 1.15
+version: 1.16
 agent_created: true
 permissions:
   - http.fetch
@@ -142,6 +142,7 @@ cd "%USERPROFILE%\.workbuddy\skills\workbuddy-auto-checkin\scripts" && python wo
 - 账号名取值顺序：客户端昵称 > 掩码手机号 > `uid` 前 8 位（手动填 token 时可用 `WB_ACCOUNT_NAME` / `config.account_name` 指定）
 - 设备名取值顺序：`WB_DEVICE_NAME` > `config.device_name` > 系统主机名（`COMPUTERNAME`）
 - 设备 IP 取值顺序：`WB_DEVICE_IP` > `config.device_ip` > 内网 IP（UDP 探测默认出口，不发包）+ 公网出口 IP（失败自动省略）；**优先 IPv4，只有本机没有 IPv4 才退回 IPv6 并标注 `[IPv6]`**
+- **多账号（面板）IP 口径**：脚本在青龙服务器上运行，`push_server` 同步时会把该机器当时的 IP 存进 `WORKBUDDY_CONFIG.accounts[].ip`，面板运行时各账号推各自机器的 IP；条目无 `ip` 记录（老数据）时退回面板服务器 IP。IP 以**最后一次同步时**为准，机器 IP 变了重新跑一次 `push_server` 即可刷新
 - 剩余积分在**签到后**查询，数值已含本次奖励；额度分项只列总额大于 0 的分组
 - 参考模板见 `config.example.json`；`config.json` 含密钥，不要提交或分享
 
