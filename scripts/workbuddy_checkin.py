@@ -1463,17 +1463,16 @@ def run_all(quiet=False):
 
     # 多账号模式(面板统一配置 WORKBUDDY_CONFIG 里的 accounts, 每台机器一组凭证)
     if accounts:
-        server_ip = get_device_ip()   # 兜底: 面板服务器自己的 IP
         log(f"多账号模式({pc.get('source') or '环境变量'}): 共 {len(accounts)} 台机器")
         for a in accounts:
             machine = str(a.get("machine", "?"))
             device = str(a.get("device") or f"机器{machine}")
             account = str(a.get("account") or device)
             note = str(a.get("note") or "")
-            # 每台机器推送自己同步时记录的 IP; 老条目没记录才退回服务器 IP
+            # 只认该机器自己同步时记录的 IP; 没有记录就明确提示, 不用服务器 IP 冒充
             ip = (str(a.get("ip") or "").strip()
                   or str(a.get("device_ip") or "").strip()
-                  or server_ip)
+                  or "未同步(在该机器运行 push_server 后记录)")
             log(f"—— {device} ({machine}) | {account} | {ip} ——")
             try:
                 lines, flags = process_account(a["token"], str(a.get("uid") or ""),
